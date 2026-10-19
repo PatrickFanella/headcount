@@ -107,7 +107,8 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN streams s ON s.channel_id = c.id AND s.ended_at IS NULL
 			LEFT JOIN stream_scores ls ON ls.stream_id = s.id
 			WHERE (NOT $2 OR s.id IS NOT NULL)
-			ORDER BY coalesce(ls.quotient, c.quotient) DESC NULLS LAST, viewers DESC NULLS LAST, c.best_rank
+			ORDER BY coalesce(CASE WHEN ls.confidence >= 0.1 THEN ls.quotient END,
+			                  CASE WHEN c.quotient_confidence >= 0.1 THEN c.quotient END) DESC NULLS LAST, viewers DESC NULLS LAST, c.best_rank
 			LIMIT $1
 		) x`, limit, liveOnly)
 	if err != nil {

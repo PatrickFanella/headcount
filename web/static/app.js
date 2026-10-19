@@ -39,6 +39,7 @@ const WEIGHTS = {
 
 function meter(value, confidence) {
   if (value == null) return '<span class="muted">not scored</span>';
+  if (confidence != null && confidence < 0.1) return '<span class="muted">too little data</span>';
   const low = confidence != null && confidence < 0.4;
   return `<span class="meter${low ? ' low-conf' : ''}" title="confidence ${pct(confidence)}">
     <span class="track"><span class="fill" style="display:block;width:${Math.max(2, value)}%"></span></span>
