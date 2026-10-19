@@ -152,7 +152,7 @@ func (s *Server) channel(w http.ResponseWriter, r *http.Request) {
 				       (SELECT round(avg(v.viewers)) FROM viewer_samples v WHERE v.channel_id = s.channel_id AND v.stream_id = s.id
 				        AND v.ts BETWEEN s.first_seen_at AND s.last_seen_at) AS avg_viewers
 				FROM streams s LEFT JOIN stream_scores sc ON sc.stream_id = s.id
-				WHERE s.channel_id = c.id ORDER BY s.started_at DESC LIMIT 50) x)
+				WHERE s.channel_id = c.id::bigint ORDER BY s.started_at DESC LIMIT 50) x)
 		)
 		FROM (SELECT id::text AS id, login, display_name, tier, best_rank, first_seen_at, last_top_at, last_live_at,
 		             quotient, quotient_confidence, quotient_updated_at
