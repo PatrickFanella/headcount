@@ -13,8 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/api"
-	"git.subcult.tv/subculture-collective/sus-quotient/web"
+	"git.subcult.tv/subculture-collective/headcount/internal/api"
+	"git.subcult.tv/subculture-collective/headcount/web"
 )
 
 func main() {

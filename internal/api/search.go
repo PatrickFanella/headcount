@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/score"
+	"git.subcult.tv/subculture-collective/headcount/internal/score"
 )
 
 const (

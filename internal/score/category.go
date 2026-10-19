@@ -3,7 +3,7 @@ package score
 import (
 	"math"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/store"
+	"git.subcult.tv/subculture-collective/headcount/internal/store"
 )
 
 // Chat engagement differs by category: a Just Chatting audience talks far

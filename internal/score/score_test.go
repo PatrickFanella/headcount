@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/store"
+	"git.subcult.tv/subculture-collective/headcount/internal/store"
 )
 
 func TestBuildAlignsSeriesAndChatModes(t *testing.T) {

@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/chat"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/helix"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/live"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/score"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/store"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/tracker"
+	"git.subcult.tv/subculture-collective/headcount/internal/chat"
+	"git.subcult.tv/subculture-collective/headcount/internal/helix"
+	"git.subcult.tv/subculture-collective/headcount/internal/live"
+	"git.subcult.tv/subculture-collective/headcount/internal/score"
+	"git.subcult.tv/subculture-collective/headcount/internal/store"
+	"git.subcult.tv/subculture-collective/headcount/internal/tracker"
 )
 
 func env(key, def string) string {

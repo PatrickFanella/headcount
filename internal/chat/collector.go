@@ -18,9 +18,9 @@ import (
 
 	twitch "github.com/gempir/go-twitch-irc/v4"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/helix"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/live"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/store"
+	"git.subcult.tv/subculture-collective/headcount/internal/helix"
+	"git.subcult.tv/subculture-collective/headcount/internal/live"
+	"git.subcult.tv/subculture-collective/headcount/internal/store"
 )
 
 const (

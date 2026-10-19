@@ -18,8 +18,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/detect"
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/store"
+	"git.subcult.tv/subculture-collective/headcount/internal/detect"
+	"git.subcult.tv/subculture-collective/headcount/internal/store"
 )
 
 // Version increments whenever detector logic or weights change, so old

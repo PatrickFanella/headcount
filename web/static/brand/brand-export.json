@@ -17,27 +17,27 @@
     },
     {
       "path": "fonts/Barlow-Condensed-0.woff2",
-      "sha256": "b6520ee700c1e619ea637ffd6f9b17a2ec5fde9872a3a3b2ea106d5abfd4a422"
+      "sha256": "bdb7642074a14984cf84b2772e50ffb3abf58c0ee8e9e177730a4a89ad2dee24"
     },
     {
       "path": "fonts/Barlow-Condensed-1.woff2",
-      "sha256": "28c0b8db838927ee14ab4e7f2098550d196f20acec4eed31d9412a8f0b2746f7"
+      "sha256": "1351d69737942cc94771d219c19fd76ca3c3bb3c22244059badc5b6a51d83ffa"
     },
     {
       "path": "fonts/JetBrains-Mono-0.woff2",
-      "sha256": "100308806e732b3174b9c8cff9aeebb91aca2b7b910c1ae4c5cc5fc34c0e2b51"
+      "sha256": "1814124d8e823a754aac89b1d21b4aab635aa3e8bafcb8c6ad28c76aae85cda0"
     },
     {
       "path": "fonts/JetBrains-Mono-1.woff2",
-      "sha256": "1698190565f3fb5034b6ee070cf216bb882f314a563fe7fee465fdc1260e2348"
+      "sha256": "f3a3573fa48f5c4bb65489449684373447c41f498fb0f8ec75fcc9c5730d28b1"
     },
     {
       "path": "fonts/Public-Sans-0.woff2",
-      "sha256": "f415f084152c8d7ae865143827bff0844dfa3efd2bdd7d335ba43a53b7902778"
+      "sha256": "f367f891682e72e9544733994009934026525e7c6c2f7e510a207a14d39cafcc"
     },
     {
       "path": "fonts/Public-Sans-1.woff2",
-      "sha256": "bb8fc4d57c9b8ff601dda2bc5f4fadc6d8f8bb0a6ffef7a34d5f3314a1b783be"
+      "sha256": "768c20eaf17d3d5bb7d193cbb94cf3601a9f28efccb36c8ba558c3af93ae2272"
     },
     {
       "path": "fonts/barlowcondensed-OFL.txt",
@@ -69,7 +69,7 @@
     },
     {
       "path": "og.png",
-      "sha256": "065f706d48edc664afbfc1995f97c2df8c59e6794ef64e13e9919cd32907aca7"
+      "sha256": "b4d69a0fe358713767984aeb5e773be7c5bf85b434c56aec9bb7604cfcbb19bf"
     },
     {
       "path": "tokens.css",

@@ -5,8 +5,8 @@ patterns that view-bots, follow-bots and chat-bots produce. The score is the sus
 quotient. A high quotient means the data looks botted. It does not prove the
 streamer bought bots.
 
-Headcount is the product name. The repository, service and database keep the
-`sus-quotient` name. Branding and interface rules are in
+The repository, Go module and Compose project are `headcount`. The database
+(`susq`), its roles and the backup files keep their original names. Branding and interface rules are in
 [docs/design-system.md](docs/design-system.md).
 
 ## What it collects

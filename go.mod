@@ -1,4 +1,4 @@
-module git.subcult.tv/subculture-collective/sus-quotient
+module git.subcult.tv/subculture-collective/headcount
 
 go 1.27
 

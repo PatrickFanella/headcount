@@ -3,7 +3,7 @@ package score
 import (
 	"math"
 
-	"git.subcult.tv/subculture-collective/sus-quotient/internal/store"
+	"git.subcult.tv/subculture-collective/headcount/internal/store"
 )
 
 // baseline models expected chat engagement for a given audience size:
