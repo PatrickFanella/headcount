@@ -52,7 +52,11 @@ func (s *Scorer) Run(ctx context.Context) {
 }
 
 func (s *Scorer) runOnce(ctx context.Context) error {
-	if time.Since(s.baselineAt) > time.Hour || s.baseline == nil {
+	refit := time.Hour
+	if s.baseline == nil || !s.baseline.ok {
+		refit = 10 * time.Minute
+	}
+	if time.Since(s.baselineAt) > refit {
 		peers, err := s.store.ChatPeerStats(ctx, time.Now().Add(-7*24*time.Hour))
 		if err != nil {
 			return err

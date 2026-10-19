@@ -41,5 +41,20 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  api:
+    build: .
+    entrypoint: ["/usr/local/bin/api"]
+    environment:
+      DATABASE_URL: postgres://susq:${POSTGRES_PASSWORD}@db:5432/susq?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    # LAN and loopback only; not published through the edge.
+    ports:
+      - "127.0.0.1:18091:8081"
+      - "10.0.0.50:18091:8081"
+    restart: unless-stopped
+    logging: *logging
+
 volumes:
   db:
