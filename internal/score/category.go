@@ -33,7 +33,18 @@ var families = map[string]string{
 	"Sports": "sports", "Chess": "sports",
 }
 
-func familyOf(gameName string) string {
+// Families returns a copy of the category-to-group map for categories that are
+// not games.
+func Families() map[string]string {
+	out := make(map[string]string, len(families))
+	for k, v := range families {
+		out[k] = v
+	}
+	return out
+}
+
+// FamilyOf names the group of similar categories gameName belongs to.
+func FamilyOf(gameName string) string {
 	if f, ok := families[gameName]; ok {
 		return f
 	}
@@ -96,7 +107,7 @@ func (b *baselines) fitOffsets(peers []store.PeerStat) {
 		if p.GameID != "" {
 			o.names[p.GameID] = p.GameName
 		}
-		rs = append(rs, res{fam: familyOf(p.GameName), cat: p.GameID, r: r})
+		rs = append(rs, res{fam: FamilyOf(p.GameName), cat: p.GameID, r: r})
 	}
 	// Offsets are estimated in SD units, then capped and stored as such.
 	famSum := map[string]float64{}
@@ -136,7 +147,7 @@ func (b *baselines) Expect(lang, gameID, gameName string) Expectation {
 		// Unknown category: no family can be assumed, so only the language line applies.
 		return e
 	}
-	e.Family = familyOf(gameName)
+	e.Family = FamilyOf(gameName)
 	total := clamp(b.offsets.family[e.Family]+b.offsets.category[gameID], maxOffsetSD)
 	e.FamilyOffset = b.offsets.family[e.Family] * line.sd
 	e.CategoryOffset = (total - b.offsets.family[e.Family]) * line.sd

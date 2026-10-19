@@ -56,12 +56,138 @@ async function route() {
     else if (parts[0] === 's' && parts[1]) await streamView(parts[1]);
     else if (parts[0] === 'about') aboutView();
     else if (parts[0] === 'engagement') await engagementView();
+    else if (parts[0] === 'search') await searchView();
+    else if (parts[0] === 'category' && parts[1]) await categoryView(parts[1]);
     else await leaderboardView(parts[0] === 'live');
   } catch (e) {
     app.innerHTML = `<div class="empty">Couldn’t load this page: ${esc(e.message)}</div>`;
   }
 }
 window.addEventListener('hashchange', route);
+
+// ---------- search ----------
+
+const searchForm = document.getElementById('search');
+const searchInput = document.getElementById('search-q');
+const suggest = document.getElementById('search-suggest');
+let suggestTimer, suggestSeq = 0;
+
+function hideSuggest() {
+  suggest.hidden = true;
+  searchInput.setAttribute('aria-expanded', 'false');
+}
+
+function channelLink(c) {
+  return `<a href="#/c/${encodeURIComponent(c.login)}">${c.live ? '<span class="live-dot" title="live"></span>' : ''}${esc(c.display_name)}
+    <span class="muted small">${c.quotient != null && c.quotient_confidence >= 0.1 ? q(c.quotient) : ''}</span></a>`;
+}
+
+function categoryLink(g) {
+  return `<a href="#/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}
+    <span class="muted small">${n(g.streams)} streams</span></a>`;
+}
+
+async function showSuggest() {
+  const text = searchInput.value.trim();
+  const seq = ++suggestSeq;
+  if (text.length < 2) { hideSuggest(); return; }
+  let res;
+  try { res = await api(`/search?q=${encodeURIComponent(text)}`); } catch { return; }
+  if (seq !== suggestSeq) return;
+  const chans = res.channels.slice(0, 6), cats = res.categories.slice(0, 4);
+  suggest.innerHTML = (chans.length ? `<div class="group">Channels</div>${chans.map(channelLink).join('')}` : '')
+    + (cats.length ? `<div class="group">Categories</div>${cats.map(categoryLink).join('')}` : '')
+    + `<a class="all" href="#/search?q=${encodeURIComponent(text)}">${chans.length || cats.length ? 'All results' : 'No matches'} for “${esc(text)}”</a>`;
+  suggest.hidden = false;
+  searchInput.setAttribute('aria-expanded', 'true');
+}
+
+searchInput.addEventListener('input', () => { clearTimeout(suggestTimer); suggestTimer = setTimeout(showSuggest, 200); });
+searchForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = searchInput.value.trim();
+  if (!text) return;
+  hideSuggest();
+  location.hash = `#/search?q=${encodeURIComponent(text)}`;
+});
+searchForm.addEventListener('keydown', (e) => {
+  const links = [...suggest.querySelectorAll('a')];
+  const i = links.indexOf(document.activeElement);
+  if (e.key === 'Escape') { hideSuggest(); searchInput.focus(); }
+  else if (e.key === 'ArrowDown' && !suggest.hidden && links.length) { e.preventDefault(); links[Math.min(i + 1, links.length - 1)].focus(); }
+  else if (e.key === 'ArrowUp' && i >= 0) { e.preventDefault(); (i === 0 ? searchInput : links[i - 1]).focus(); }
+});
+suggest.addEventListener('click', (e) => { if (e.target.closest('a')) { hideSuggest(); searchInput.blur(); } });
+document.addEventListener('click', (e) => { if (!searchForm.contains(e.target)) hideSuggest(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && !e.target.closest('input, select, textarea')) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+});
+
+async function searchView() {
+  const text = (new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '').trim();
+  searchInput.value = text;
+  if (!text) { app.innerHTML = '<h1>Search</h1><div class="empty">Type a channel or category name in the search box.</div>'; return; }
+  const res = await api(`/search?q=${encodeURIComponent(text)}`);
+  app.innerHTML = `
+    <h1>Search: “${esc(text)}”</h1>
+    <p class="sub">Tracked channels whose name contains the search, and categories tracked channels streamed in the last 90 days.</p>
+    <h2>Channels</h2>
+    ${res.channels.length ? `<table><thead><tr><th>Channel</th><th class="r">Best rank</th><th>Last live</th><th>Quotient</th></tr></thead><tbody>
+      ${res.channels.map((c) => `<tr data-href="#/c/${encodeURIComponent(c.login)}">
+        <td>${c.live ? '<span class="live-dot" title="live"></span>' : ''}<a href="#/c/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
+          <span class="tier">${esc(c.tier)}</span></td>
+        <td class="r num">${c.best_rank != null ? `#${c.best_rank}` : '–'}</td>
+        <td>${c.live ? 'live now' : c.last_live_at ? dateTime(c.last_live_at) : '<span class="muted">never seen live</span>'}</td>
+        <td>${meter(c.quotient, c.quotient_confidence)}</td>
+      </tr>`).join('')}</tbody></table>` : '<div class="empty">No tracked channel matches. Only channels that have reached the Twitch top 200 are tracked.</div>'}
+    <h2>Categories</h2>
+    ${res.categories.length ? `<table><thead><tr><th>Category</th><th class="r">Streams</th><th class="r">Channels</th></tr></thead><tbody>
+      ${res.categories.map((g) => `<tr data-href="#/category/${encodeURIComponent(g.game_id)}">
+        <td><a href="#/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}</a></td>
+        <td class="r num">${n(g.streams)}</td><td class="r num">${n(g.channels)}</td>
+      </tr>`).join('')}</tbody></table>` : '<div class="empty">No category matches.</div>'}`;
+  app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', (e) => {
+    if (!e.target.closest('a')) location.hash = tr.dataset.href;
+  }));
+}
+
+// ---------- category ----------
+
+const FAMILY_NAMES = { social: 'social', creative: 'creative', gambling: 'gambling', sports: 'sports', games: 'game' };
+
+async function categoryView(id) {
+  const d = await api(`/categories/${encodeURIComponent(id)}`);
+  app.innerHTML = `
+    <h1>${esc(d.game_name)}</h1>
+    <p class="sub">Tracked channels that streamed this category in the last ${d.days} days, ordered by their highest stream score
+      here. The scorer compares a stream’s chat with others in its category and with similar ${FAMILY_NAMES[d.family] ?? d.family}
+      categories.</p>
+    <div class="tiles">
+      <div class="tile"><div class="v num">${n(d.channels.length)}</div><div class="l">channels</div></div>
+      <div class="tile"><div class="v num">${n(d.streams)}</div><div class="l">streams</div></div>
+      <div class="tile"><div class="v num">${n(d.scored)}</div><div class="l">streams scored</div></div>
+      <div class="tile"><div class="v num">${d.median_quotient != null ? q(d.median_quotient) : '–'}</div><div class="l">median stream score</div></div>
+    </div>
+    ${d.related.length ? `<p class="muted">Similar categories: ${d.related.map((g) =>
+      `<a href="#/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}</a>`).join(', ')}</p>` : ''}
+    <div class="table-wrap"><table><thead><tr><th>Channel</th><th class="r">Streams here</th><th class="r">Peak viewers</th>
+      <th>Highest stream score</th><th>Average here</th><th>Channel quotient</th></tr></thead><tbody>
+      ${d.channels.map((c) => `<tr data-href="${c.top_stream_id ? `#/s/${c.top_stream_id}` : `#/c/${encodeURIComponent(c.login)}`}">
+        <td>${c.live ? '<span class="live-dot" title="live"></span>' : ''}<a href="#/c/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
+          <span class="tier">${esc(c.tier)}</span></td>
+        <td class="r num">${n(c.streams)}</td>
+        <td class="r num">${n(c.peak)}</td>
+        <td>${c.max_quotient != null ? meter(c.max_quotient) : '<span class="muted">not scored</span>'}</td>
+        <td class="num">${c.avg_quotient != null ? q(c.avg_quotient) : '–'}</td>
+        <td>${meter(c.channel_quotient, c.channel_confidence)}</td>
+      </tr>`).join('')}</tbody></table></div>
+    <p class="caption">Clicking a row opens that channel’s highest-scoring stream in this category. Streams with too little data
+      are left out of the scores.</p>
+    <p><a href="#/engagement?days=14&cat=${encodeURIComponent(d.game_name)}">Plot this category on the engagement map</a></p>`;
+  app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', (e) => {
+    if (!e.target.closest('a')) location.hash = tr.dataset.href;
+  }));
+}
 
 // ---------- leaderboard ----------
 
@@ -149,6 +275,11 @@ async function engagementView() {
     .map((l) => [l, data.points.filter((p) => p.language === l).length]).sort((a, b) => b[1] - a[1]);
   const cats = [...new Set(data.points.map((p) => p.game_name).filter(Boolean))]
     .map((c) => [c, data.points.filter((p) => p.game_name === c).length]).sort((a, b) => b[1] - a[1]).slice(0, 40);
+  const wantCat = params.get('cat') || '';
+  if (wantCat && !cats.some(([c]) => c === wantCat)) {
+    const k = data.points.filter((p) => p.game_name === wantCat).length;
+    if (k) cats.push([wantCat, k]);
+  }
   const names = new Intl.DisplayNames([], { type: 'language' });
   const langName = (l) => { try { return names.of(l); } catch { return l; } };
   app.innerHTML = `
@@ -177,11 +308,14 @@ async function engagementView() {
   const box = document.getElementById('em');
   const langSel = document.getElementById('em-lang');
   const catSel = document.getElementById('em-cat');
+  if (cats.some(([c]) => c === wantCat)) catSel.value = wantCat;
   const draw = () => renderEngagementMap(box, data, langSel.value, catSel.value);
   draw();
   langSel.addEventListener('change', draw);
   catSel.addEventListener('change', draw);
-  document.getElementById('em-days').addEventListener('change', (e) => { location.hash = `#/engagement?days=${e.target.value}`; });
+  document.getElementById('em-days').addEventListener('change', (e) => { 
+    location.hash = `#/engagement?days=${e.target.value}${catSel.value ? `&cat=${encodeURIComponent(catSel.value)}` : ''}`;
+  });
 }
 
 // ---------- stream ----------

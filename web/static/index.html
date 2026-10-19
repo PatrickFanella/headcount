@@ -16,6 +16,11 @@
         <a href="#/engagement">Engagement map</a>
         <a href="#/about">How scoring works</a>
       </nav>
+      <form class="search" id="search" role="search" autocomplete="off">
+        <input type="search" id="search-q" name="q" maxlength="50" placeholder="Search channels and categories"
+          aria-label="Search channels and categories" aria-controls="search-suggest" aria-expanded="false">
+        <div class="suggest" id="search-suggest" hidden></div>
+      </form>
     </header>
     <main id="app" aria-live="polite"></main>
     <div id="tooltip" class="tooltip" role="tooltip" hidden></div>

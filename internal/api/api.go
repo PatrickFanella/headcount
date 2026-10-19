@@ -51,6 +51,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/streams/{id}/account-ages", s.streamAccountAges)
 	mux.HandleFunc("GET /api/engagement", s.engagement)
 	mux.HandleFunc("GET /api/sparklines", s.sparklines)
+	mux.HandleFunc("GET /api/search", s.search)
+	mux.HandleFunc("GET /api/categories/{id}", s.category)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.Ping(r.Context()); err != nil {
 			http.Error(w, "db unavailable", http.StatusServiceUnavailable)

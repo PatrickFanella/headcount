@@ -45,3 +45,12 @@ func TestClientIPTrustsOnlyProxies(t *testing.T) {
 		t.Fatalf("trusted peer: got %v, want last hop", got)
 	}
 }
+
+func TestLikePatternEscapesWildcards(t *testing.T) {
+	if got := likePattern(`50%_a\b`); got != `%50\%\_a\\b%` {
+		t.Fatalf("likePattern = %q", got)
+	}
+	if got := prefixPattern("xqc"); got != "xqc%" {
+		t.Fatalf("prefixPattern = %q", got)
+	}
+}
