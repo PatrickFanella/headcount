@@ -46,10 +46,14 @@ services:
     build: .
     entrypoint: ["/usr/local/bin/api"]
     environment:
-      DATABASE_URL: postgres://susq:${POSTGRES_PASSWORD}@db:5432/susq?sslmode=disable
+      # Read-only role; the collector enables its login from API_DB_PASSWORD.
+      DATABASE_URL: postgres://susq_api:${API_DB_PASSWORD:?set API_DB_PASSWORD in .env}@db:5432/susq?sslmode=disable
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
     depends_on:
       db:
         condition: service_healthy
+      collector:
+        condition: service_started
     # LAN and loopback only; not published through the edge.
     ports:
       - "127.0.0.1:18091:8081"

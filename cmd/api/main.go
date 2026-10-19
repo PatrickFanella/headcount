@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -43,9 +44,16 @@ func main() {
 	if addr == "" {
 		addr = ":8081"
 	}
+	trusted, err := api.ParsePrefixes(os.Getenv("TRUSTED_PROXIES"))
+	if err != nil {
+		log.Error("TRUSTED_PROXIES", "err", err)
+		os.Exit(2)
+	}
+	server := api.New(db, web.FS(), log)
+	server.Limit(envInt("RATE_PER_MINUTE", 120), envInt("RATE_BURST", 60), trusted)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(db, web.FS(), log).Handler(),
+		Handler:           server.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
 	}
@@ -60,4 +68,11 @@ func main() {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}
+}
+
+func envInt(key string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
+		return v
+	}
+	return def
 }

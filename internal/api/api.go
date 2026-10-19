@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type Server struct {
 	db  *pgxpool.Pool
 	log *slog.Logger
 	web fs.FS
+	lim *limiter
 
 	overviewMu  sync.Mutex
 	overviewAt  time.Time
@@ -28,6 +30,12 @@ type Server struct {
 
 func New(db *pgxpool.Pool, web fs.FS, log *slog.Logger) *Server {
 	return &Server{db: db, web: web, log: log}
+}
+
+// Limit enables per-client rate limiting of /api/ requests. trusted lists the
+// reverse proxies whose X-Forwarded-For header is believed.
+func (s *Server) Limit(perMinute, burst int, trusted []netip.Prefix) {
+	s.lim = newLimiter(perMinute, burst, trusted)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -44,7 +52,11 @@ func (s *Server) Handler() http.Handler {
 		w.Write([]byte("ok"))
 	})
 	mux.Handle("GET /", http.FileServerFS(s.web))
-	return mux
+	var h http.Handler = mux
+	if s.lim != nil {
+		h = s.lim.wrap(h)
+	}
+	return secure(h)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, v any) {

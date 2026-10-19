@@ -38,6 +38,17 @@ func Open(ctx context.Context, url string) (*Store, error) {
 
 func (s *Store) Close() { s.Pool.Close() }
 
+// EnableAPIRole lets the read-only susq_api role log in with password.
+func (s *Store) EnableAPIRole(ctx context.Context, password string) error {
+	var stmt string
+	if err := s.Pool.QueryRow(ctx, `SELECT format('ALTER ROLE susq_api WITH LOGIN PASSWORD %L', $1::text)`,
+		password).Scan(&stmt); err != nil {
+		return err
+	}
+	_, err := s.Pool.Exec(ctx, stmt)
+	return err
+}
+
 // Migrate applies embedded migrations in filename order, each in its own
 // transaction.
 func (s *Store) Migrate(ctx context.Context) error {

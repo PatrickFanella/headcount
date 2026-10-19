@@ -72,6 +72,12 @@ func main() {
 		log.Error("migrate", "err", err)
 		os.Exit(1)
 	}
+	if pw := os.Getenv("API_DB_PASSWORD"); pw != "" {
+		if err := st.EnableAPIRole(ctx, pw); err != nil {
+			log.Error("enable api role", "err", err)
+			os.Exit(1)
+		}
+	}
 
 	h := helix.New(clientID, secret)
 	ls := live.New()
