@@ -1,0 +1,100 @@
+{
+  "brand": "Headcount",
+  "source": "subcult-tv studio/brands/headcount",
+  "status": "owner-selected identity, October 19, 2026; template layouts are samples and are not approved social posts",
+  "files": [
+    {
+      "path": "apple-touch-icon.png",
+      "sha256": "bb34546ce74c3809b41ffa7d05ccf14a438ae01df6e06ab7970aab67212f26e6"
+    },
+    {
+      "path": "favicon.ico",
+      "sha256": "9e1f2410323ce65be56ac1241cd0c7e3d5b974d681f327ee884838975a4056c6"
+    },
+    {
+      "path": "favicon.svg",
+      "sha256": "3fba191e7b3fcfecafdd65d3ca04cf74fdac2f44cc9b2d387f3e685504e8684f"
+    },
+    {
+      "path": "fonts/Barlow-Condensed-0.woff2",
+      "sha256": "b6520ee700c1e619ea637ffd6f9b17a2ec5fde9872a3a3b2ea106d5abfd4a422"
+    },
+    {
+      "path": "fonts/Barlow-Condensed-1.woff2",
+      "sha256": "28c0b8db838927ee14ab4e7f2098550d196f20acec4eed31d9412a8f0b2746f7"
+    },
+    {
+      "path": "fonts/JetBrains-Mono-0.woff2",
+      "sha256": "100308806e732b3174b9c8cff9aeebb91aca2b7b910c1ae4c5cc5fc34c0e2b51"
+    },
+    {
+      "path": "fonts/JetBrains-Mono-1.woff2",
+      "sha256": "1698190565f3fb5034b6ee070cf216bb882f314a563fe7fee465fdc1260e2348"
+    },
+    {
+      "path": "fonts/Public-Sans-0.woff2",
+      "sha256": "f415f084152c8d7ae865143827bff0844dfa3efd2bdd7d335ba43a53b7902778"
+    },
+    {
+      "path": "fonts/Public-Sans-1.woff2",
+      "sha256": "bb8fc4d57c9b8ff601dda2bc5f4fadc6d8f8bb0a6ffef7a34d5f3314a1b783be"
+    },
+    {
+      "path": "fonts/barlowcondensed-OFL.txt",
+      "sha256": "186d750eb496a4c17a76385f82be6aea2ac1cf2de074a811d63786cf374ea73f"
+    },
+    {
+      "path": "fonts/jetbrainsmono-OFL.txt",
+      "sha256": "b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d"
+    },
+    {
+      "path": "fonts/publicsans-OFL.txt",
+      "sha256": "157a9e77f7580246e97c769490e2e977ae94399f9d30f4556015c41fe8c28bac"
+    },
+    {
+      "path": "icon-192.png",
+      "sha256": "11402a1c3a505bad037d63860fc86a8bb1df8bf3d525d9c34343986a97b1a0ce"
+    },
+    {
+      "path": "icon-512.png",
+      "sha256": "7d8f80fa7ae9ae4599b2f76dafd416d65b099ddd20daed7f0e4396b42122183b"
+    },
+    {
+      "path": "icon-maskable.png",
+      "sha256": "b2345fad5a759ee9978379249cfe2596a80597fa23602e1119735aad863cb12e"
+    },
+    {
+      "path": "mark-themed.svg",
+      "sha256": "73710e33f2256e669683ae906d87044c6e4d38d9389ece264577fd8b80096a43"
+    },
+    {
+      "path": "og.png",
+      "sha256": "065f706d48edc664afbfc1995f97c2df8c59e6794ef64e13e9919cd32907aca7"
+    },
+    {
+      "path": "tokens.css",
+      "sha256": "7dd93a34217b7766b10bf16037a8f432245930df53dc2eff66d3fb851c08ae7e"
+    }
+  ],
+  "copied": [
+    "product/favicon.svg",
+    "product/favicon.ico",
+    "product/icon-192.png",
+    "product/icon-512.png",
+    "product/apple-touch-icon.png",
+    "product/icon-maskable.png",
+    "product/og.png",
+    "logos/mark-themed.svg",
+    "tokens.css",
+    "fonts/Barlow-Condensed-0.ttf -> fonts/Barlow-Condensed-0.woff2",
+    "fonts/Barlow-Condensed-1.ttf -> fonts/Barlow-Condensed-1.woff2",
+    "fonts/barlowcondensed-OFL.txt",
+    "fonts/Public-Sans-0.ttf -> fonts/Public-Sans-0.woff2",
+    "fonts/Public-Sans-1.ttf -> fonts/Public-Sans-1.woff2",
+    "fonts/publicsans-OFL.txt",
+    "fonts/JetBrains-Mono-0.ttf -> fonts/JetBrains-Mono-0.woff2",
+    "fonts/JetBrains-Mono-1.ttf -> fonts/JetBrains-Mono-1.woff2",
+    "fonts/jetbrainsmono-OFL.txt"
+  ],
+  "rule": "Generated copies. Change the pack in Studio and export again; do not edit these files."
+}

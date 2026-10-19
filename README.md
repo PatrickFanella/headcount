@@ -1,8 +1,13 @@
-# sus quotient
+# Headcount
 
 Tracks Twitch channels that reach the global top 200 and scores each stream for
-patterns that view-bots, follow-bots and chat-bots produce. A high quotient
-means the data looks botted. It does not prove the streamer bought bots.
+patterns that view-bots, follow-bots and chat-bots produce. The score is the sus
+quotient. A high quotient means the data looks botted. It does not prove the
+streamer bought bots.
+
+Headcount is the product name. The repository, service and database keep the
+`sus-quotient` name. Branding and interface rules are in
+[docs/design-system.md](docs/design-system.md).
 
 ## What it collects
 
