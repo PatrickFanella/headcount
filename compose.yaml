@@ -37,8 +37,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Health only; Dozor's Blackbox probe reads it over the LAN.
     ports:
       - "127.0.0.1:18090:8080"
+      - "10.0.0.50:18090:8080"
     restart: unless-stopped
     logging: *logging
 
@@ -61,8 +63,8 @@ services:
     restart: unless-stopped
     logging: *logging
 
-  # Nightly logical dump into ./backups, keeping 7 days. Same host as the
-  # database, so this protects against bad migrations, not disk loss.
+  # Nightly logical dump into ./backups, keeping 7 days. Dozor pulls a copy
+  # each night (sus-quotient-backup.timer there) for disk or host loss.
   backup:
     image: timescale/timescaledb:latest-pg17
     user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
