@@ -81,17 +81,19 @@ func (p *Poller) Run(ctx context.Context) {
 		t := next.Truncate(time.Minute)
 		tickCtx, cancel := context.WithTimeout(ctx, 50*time.Second)
 		start := time.Now()
-		if err := p.tick(tickCtx, t); err != nil {
+		if err := p.tick(ctx, tickCtx, t); err != nil {
 			p.log.Error("poll failed", "minute", t, "err", err)
 		} else {
 			p.log.Info("poll", "minute", t.Format(time.TimeOnly), "live", p.lastLive.Load(),
-				"polled", p.lastPolled.Load(), "took", time.Since(start).Round(time.Millisecond))
+				"polled", p.lastPolled.Load(), "took", time.Since(start).Round(time.Millisecond).String())
 		}
 		cancel()
 	}
 }
 
-func (p *Poller) tick(ctx context.Context, t time.Time) error {
+// tick runs one poll. base outlives the tick and is used for follower sampling,
+// which continues in the background after the tick returns.
+func (p *Poller) tick(base, ctx context.Context, t time.Time) error {
 	top, err := p.helix.TopStreams(ctx, p.cfg.TopN)
 	if err != nil && len(top) == 0 {
 		return err
@@ -215,7 +217,7 @@ func (p *Poller) tick(ctx context.Context, t time.Time) error {
 	p.lastOK.Store(time.Now().Unix())
 	p.lastLive.Store(int64(len(samples)))
 	p.lastPolled.Store(int64(len(polled)))
-	p.followers.trigger(ctx, t, chans, p.live)
+	p.followers.trigger(base, t, chans, p.live)
 	return nil
 }
 

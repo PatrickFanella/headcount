@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"maps"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,10 +48,10 @@ type conn struct {
 }
 
 type Collector struct {
-	live   *live.State
-	store  *store.Store
-	helix  *helix.Client
-	log    *slog.Logger
+	live  *live.State
+	store *store.Store
+	helix *helix.Client
+	log   *slog.Logger
 
 	mu        sync.Mutex
 	aggs      map[int64]*minuteAgg
