@@ -392,8 +392,9 @@ func (c *Collector) flush(ctx context.Context, minute time.Time) {
 	c.aggs = map[int64]*minuteAgg{}
 	c.events = nil
 	for _, j := range c.confirmed {
+		// The join must be confirmed on the current connection, before the minute began.
 		up := j.cn.connectedAt.Load()
-		if up == 0 || time.Unix(0, up).After(minute) || j.at.After(minute) {
+		if up == 0 || time.Unix(0, up).After(minute) || j.at.After(minute) || j.at.Before(time.Unix(0, up)) {
 			continue
 		}
 		if _, ok := aggs[j.room]; !ok && c.live.StreamID(j.room) != 0 {
