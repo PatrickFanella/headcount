@@ -176,6 +176,8 @@ func (s *Store) RecordLive(ctx context.Context, t time.Time, live []LiveSample) 
 		     AS u(sid, cid, st, title, gid, gname, lang, v)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen_at = $1,
+			-- A stream closed during a Helix gap reopens and must be rescored.
+			scored_at = CASE WHEN streams.ended_at IS NOT NULL THEN NULL ELSE streams.scored_at END,
 			ended_at = NULL,
 			title = EXCLUDED.title,
 			game_id = EXCLUDED.game_id,
