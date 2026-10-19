@@ -192,3 +192,19 @@ func TestBinomTail(t *testing.T) {
 		t.Errorf("P(X>=10) = %v", p)
 	}
 }
+
+func TestUnexplainedJumpsIgnoresFlipFlop(t *testing.T) {
+	// Helix alternating between two cached values every 3-4 minutes.
+	v := make([]float64, 240)
+	for i := range v {
+		if (i/3)%2 == 0 {
+			v[i] = 2900
+		} else {
+			v[i] = 3400
+		}
+	}
+	d := StreamData{Viewers: v}
+	if c := UnexplainedJumps(d, Prepare(d)); c.Values["unexplained"] != 0 {
+		t.Errorf("flip-flop counted as jumps: %v", c.Values)
+	}
+}

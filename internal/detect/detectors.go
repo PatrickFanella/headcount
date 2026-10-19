@@ -106,8 +106,8 @@ func PeriodicSpikes(p Prepared) Component {
 	return Component{Available: true, Strength: strength, Values: values}
 }
 
-// UnexplainedJumps counts sharp viewer changes that no raid or game change
-// accounts for.
+// UnexplainedJumps counts sharp, lasting viewer level shifts that no raid or
+// game change accounts for.
 func UnexplainedJumps(d StreamData, p Prepared) Component {
 	n := len(p.Viewers)
 	if n < 60 || p.Coverage < 0.7 {
@@ -131,6 +131,14 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 		delta := p.Viewers[i] - p.Viewers[i-3]
 		threshold := math.Max(0.08*p.Baseline[i], 300)
 		if math.Abs(delta) < threshold {
+			continue
+		}
+		// Count only level shifts that persist. A change that reverts within
+		// minutes is either a spike (scored elsewhere) or Helix flip-flopping
+		// between cached values.
+		before := Median(p.Viewers[i-13 : i-3])
+		after := Median(p.Viewers[i : i+10])
+		if math.Abs(after-before) < threshold || math.Signbit(after-before) != math.Signbit(delta) {
 			continue
 		}
 		jumps++
