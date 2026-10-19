@@ -80,7 +80,7 @@ func (s *Scorer) runOnce(ctx context.Context) error {
 		return err
 	}
 	refs := done
-	if time.Since(s.lastLiveRun) >= liveEvery {
+	if time.Since(s.lastLiveRun) >= liveEvery-time.Minute { // slack for ticker jitter
 		live, err := s.store.LiveStreamsToScore(ctx, liveMinMinutes)
 		if err != nil {
 			return err
