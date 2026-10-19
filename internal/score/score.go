@@ -58,14 +58,19 @@ func (s *Scorer) runOnce(ctx context.Context) error {
 		refit = 10 * time.Minute
 	}
 	if time.Since(s.baselineAt) > refit {
+		s.baselineAt = time.Now()
 		peers, err := s.store.ChatPeerStats(ctx, time.Now().Add(-7*24*time.Hour))
 		if err != nil {
-			return err
+			// Keep the previous baseline and score with it.
+			s.log.Warn("chat baseline", "err", err)
+		} else {
+			s.baseline = fitBaseline(peers)
+			s.log.Info("chat baseline", "streams", len(peers), "ok", s.baseline.ok,
+				"slope", round(s.baseline.slope), "sd", round(s.baseline.sd))
 		}
-		s.baseline = fitBaseline(peers)
-		s.baselineAt = time.Now()
-		s.log.Info("chat baseline", "streams", len(peers), "ok", s.baseline.ok,
-			"slope", round(s.baseline.slope), "sd", round(s.baseline.sd))
+	}
+	if s.baseline == nil {
+		s.baseline = &baseline{}
 	}
 
 	// The chat collector flushes a minute after it ends; wait a few minutes
@@ -211,7 +216,7 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 	minutes := len(d.Viewers)
 	q, conf := detect.Combine(comps, minutes)
 	return s.store.SaveScore(ctx, store.Score{
-		StreamID: r.ID, ChannelID: r.ChannelID, Version: Version, Minutes: minutes,
+		StreamID: r.ID, ChannelID: r.ChannelID, LastSeenAt: r.LastSeenAt, Version: Version, Minutes: minutes,
 		Quotient: q, Confidence: conf, Final: r.Ended, Components: comps,
 	})
 }

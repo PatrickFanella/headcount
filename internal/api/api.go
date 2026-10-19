@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,10 @@ type Server struct {
 	db  *pgxpool.Pool
 	log *slog.Logger
 	web fs.FS
+
+	overviewMu  sync.Mutex
+	overviewAt  time.Time
+	overviewRaw json.RawMessage
 }
 
 func New(db *pgxpool.Pool, web fs.FS, log *slog.Logger) *Server {
@@ -66,22 +71,32 @@ func (s *Server) queryJSON(ctx context.Context, sql string, args ...any) (json.R
 	return raw, err
 }
 
+// overview is cached briefly; it is requested on every leaderboard load.
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	raw, err := s.queryJSON(r.Context(), `
+	s.overviewMu.Lock()
+	defer s.overviewMu.Unlock()
+	if time.Since(s.overviewAt) < 30*time.Second && s.overviewRaw != nil {
+		s.writeJSON(w, s.overviewRaw)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	raw, err := s.queryJSON(ctx, `
 		SELECT json_build_object(
 			'channels', (SELECT count(*) FROM channels),
 			'tiers', (SELECT json_object_agg(tier, n) FROM (SELECT tier, count(*) n FROM channels GROUP BY tier) t),
 			'live', (SELECT count(*) FROM streams WHERE ended_at IS NULL),
 			'scored_streams', (SELECT count(*) FROM stream_scores WHERE final),
-			'first_sample', (SELECT min(ts) FROM viewer_samples),
-			'last_sample', (SELECT max(ts) FROM viewer_samples),
+			'first_sample', (SELECT min(first_seen_at) FROM streams),
+			'last_sample', (SELECT max(last_seen_at) FROM streams),
 			'chat_messages_24h', (SELECT coalesce(sum(messages), 0) FROM chat_minutes WHERE ts > now() - interval '24 hours'),
-			'chatters_known', (SELECT count(*) FROM twitch_users)
+			'chatters_known', (SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = 'twitch_users'::regclass)
 		)`)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
+	s.overviewRaw, s.overviewAt = raw, time.Now()
 	s.writeJSON(w, raw)
 }
 
@@ -92,20 +107,27 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 		limit = 500
 	}
 	liveOnly := r.URL.Query().Get("live") == "1"
-	raw, err := s.queryJSON(r.Context(), `
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	raw, err := s.queryJSON(ctx, `
 		SELECT coalesce(json_agg(row_to_json(x)), '[]') FROM (
 			SELECT c.id::text AS id, c.login, c.display_name, c.tier, c.best_rank, c.first_seen_at, c.last_live_at,
 			       c.quotient, c.quotient_confidence,
 			       (SELECT count(*) FROM stream_scores sc WHERE sc.channel_id = c.id AND sc.final) AS scored_streams,
 			       s.id::text AS live_stream_id, s.game_name, s.title, s.started_at,
-			       (SELECT v.viewers FROM viewer_samples v WHERE v.channel_id = c.id AND v.stream_id = s.id
-			        ORDER BY v.ts DESC LIMIT 1) AS viewers,
-			       (SELECT v.rank FROM viewer_samples v WHERE v.channel_id = c.id AND v.stream_id = s.id
-			        ORDER BY v.ts DESC LIMIT 1) AS rank,
+			       lv.viewers, lv.rank,
 			       ls.quotient AS live_quotient, ls.confidence AS live_confidence
 			FROM channels c
 			LEFT JOIN streams s ON s.channel_id = c.id AND s.ended_at IS NULL
 			LEFT JOIN stream_scores ls ON ls.stream_id = s.id
+			-- Bounded to the stream's last minutes so offline channels and old
+			-- (compressed) chunks are never scanned.
+			LEFT JOIN LATERAL (
+				SELECT v.viewers, v.rank FROM viewer_samples v
+				WHERE v.channel_id = c.id AND v.stream_id = s.id
+				  AND v.ts BETWEEN s.last_seen_at - interval '10 minutes' AND s.last_seen_at
+				ORDER BY v.ts DESC LIMIT 1
+			) lv ON s.id IS NOT NULL
 			WHERE (NOT $2 OR s.id IS NOT NULL)
 			ORDER BY coalesce(CASE WHEN ls.confidence >= 0.1 THEN ls.quotient END,
 			                  CASE WHEN c.quotient_confidence >= 0.1 THEN c.quotient END) DESC NULLS LAST, viewers DESC NULLS LAST, c.best_rank
@@ -119,13 +141,16 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) channel(w http.ResponseWriter, r *http.Request) {
-	raw, err := s.queryJSON(r.Context(), `
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	raw, err := s.queryJSON(ctx, `
 		SELECT json_build_object(
 			'channel', row_to_json(c),
 			'streams', (SELECT coalesce(json_agg(row_to_json(x) ORDER BY x.started_at DESC), '[]') FROM (
 				SELECT s.id::text AS id, s.started_at, s.ended_at, s.title, s.game_name, s.peak_viewers,
 				       sc.quotient, sc.confidence, sc.final, sc.minutes,
-				       (SELECT round(avg(v.viewers)) FROM viewer_samples v WHERE v.channel_id = s.channel_id AND v.stream_id = s.id) AS avg_viewers
+				       (SELECT round(avg(v.viewers)) FROM viewer_samples v WHERE v.channel_id = s.channel_id AND v.stream_id = s.id
+				        AND v.ts BETWEEN s.first_seen_at AND s.last_seen_at) AS avg_viewers
 				FROM streams s LEFT JOIN stream_scores sc ON sc.stream_id = s.id
 				WHERE s.channel_id = c.id ORDER BY s.started_at DESC LIMIT 50) x)
 		)

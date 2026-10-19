@@ -130,8 +130,14 @@ func (c *Client) acquire(ctx context.Context, p Priority) error {
 			c.budgetMu.Unlock()
 			return nil
 		}
+		// Without a known reset time (no response has carried rate-limit
+		// headers since the last refill), assume the bucket refills in a
+		// minute rather than waiting for a header that can never arrive.
+		if c.resetAt.IsZero() {
+			c.resetAt = now.Add(time.Minute)
+		}
 		wait := time.Until(c.resetAt)
-		if c.resetAt.IsZero() || wait <= 0 {
+		if wait <= 0 {
 			wait = time.Second
 		}
 		c.budgetMu.Unlock()
@@ -143,7 +149,19 @@ func (c *Client) acquire(ctx context.Context, p Priority) error {
 	}
 }
 
-func (c *Client) updateBudget(h http.Header) {
+// refund returns a point taken by acquire for an attempt that got no
+// rate-limit headers back (network error, token failure, gateway error).
+func (c *Client) refund() {
+	c.budgetMu.Lock()
+	defer c.budgetMu.Unlock()
+	if c.remaining < c.limit {
+		c.remaining++
+	}
+}
+
+// updateBudget applies the response's rate-limit headers and reports whether
+// any were present.
+func (c *Client) updateBudget(h http.Header) bool {
 	rem, err1 := strconv.Atoi(h.Get("Ratelimit-Remaining"))
 	reset, err2 := strconv.ParseInt(h.Get("Ratelimit-Reset"), 10, 64)
 	limit, err3 := strconv.Atoi(h.Get("Ratelimit-Limit"))
@@ -158,6 +176,7 @@ func (c *Client) updateBudget(h http.Header) {
 	if err3 == nil && limit > 0 {
 		c.limit = limit
 	}
+	return err1 == nil
 }
 
 var ErrNotFound = errors.New("not found")
@@ -172,9 +191,6 @@ func (c *Client) get(ctx context.Context, p Priority, path string, q url.Values,
 			case <-time.After(time.Duration(attempt*attempt) * time.Second):
 			}
 		}
-		if err := c.acquire(ctx, p); err != nil {
-			return err
-		}
 		tok, err := c.accessToken(ctx, false)
 		if err != nil {
 			lastErr = err
@@ -182,6 +198,9 @@ func (c *Client) get(ctx context.Context, p Priority, path string, q url.Values,
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+path+"?"+q.Encode(), nil)
 		if err != nil {
+			return err
+		}
+		if err := c.acquire(ctx, p); err != nil {
 			return err
 		}
 		req.Header.Set("Client-Id", c.clientID)
@@ -193,9 +212,12 @@ func (c *Client) get(ctx context.Context, p Priority, path string, q url.Values,
 		if err != nil {
 			lastErr = err
 			c.countFailure()
+			c.refund()
 			continue
 		}
-		c.updateBudget(resp.Header)
+		if !c.updateBudget(resp.Header) {
+			c.refund()
+		}
 		switch {
 		case resp.StatusCode == http.StatusOK:
 			err = json.NewDecoder(resp.Body).Decode(out)

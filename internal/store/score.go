@@ -198,6 +198,7 @@ func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat,
 type Score struct {
 	StreamID   int64
 	ChannelID  int64
+	LastSeenAt time.Time // the stream's last_seen_at when it was loaded
 	Version    int
 	Minutes    int
 	Quotient   float64
@@ -216,6 +217,16 @@ func (s *Store) SaveScore(ctx context.Context, sc Score) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if sc.Final {
+		// The stream may have reopened (or received new samples) since it was
+		// loaded; then this score is only provisional.
+		tag, err := tx.Exec(ctx, `UPDATE streams SET scored_at = now()
+			WHERE id = $1 AND ended_at IS NOT NULL AND last_seen_at = $2`, sc.StreamID, sc.LastSeenAt)
+		if err != nil {
+			return err
+		}
+		sc.Final = tag.RowsAffected() == 1
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO stream_scores (stream_id, channel_id, scored_at, version, minutes, quotient, confidence, components, final)
 		VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8)
@@ -223,11 +234,6 @@ func (s *Store) SaveScore(ctx context.Context, sc Score) error {
 			confidence = $6, components = $7, final = $8`,
 		sc.StreamID, sc.ChannelID, sc.Version, sc.Minutes, sc.Quotient, sc.Confidence, comp, sc.Final); err != nil {
 		return err
-	}
-	if sc.Final {
-		if _, err := tx.Exec(ctx, `UPDATE streams SET scored_at = now() WHERE id = $1`, sc.StreamID); err != nil {
-			return err
-		}
 	}
 	return tx.Commit(ctx)
 }

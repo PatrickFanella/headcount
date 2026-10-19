@@ -315,16 +315,24 @@ func (f *followerSampler) trigger(parent context.Context, t time.Time, chans []s
 			}()
 		}
 	feed:
-		for _, id := range due {
+		for i, id := range due {
 			select {
 			case jobs <- id:
 			case <-ctx.Done():
+				// Channels never attempted this round retry next minute.
+				f.mu.Lock()
+				for _, rest := range due[i:] {
+					f.nextDue[rest] = t.Add(time.Minute)
+				}
+				f.mu.Unlock()
 				break feed
 			}
 		}
 		close(jobs)
 		wg.Wait()
-		if err := f.store.InsertFollowerSamples(context.WithoutCancel(ctx), t, samples); err != nil {
+		wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+		defer wcancel()
+		if err := f.store.InsertFollowerSamples(wctx, t, samples); err != nil {
 			f.log.Error("insert follower samples", "err", err)
 		}
 		if len(due) > 0 {

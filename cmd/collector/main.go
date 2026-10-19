@@ -78,7 +78,7 @@ func main() {
 	poller := tracker.New(tracker.Config{
 		TopN:      envInt("TOP_N", 200),
 		EndGrace:  time.Duration(envInt("END_GRACE_MINUTES", 4)) * time.Minute,
-		ColdEvery: envInt("COLD_EVERY_MINUTES", 10),
+		ColdEvery: max(1, envInt("COLD_EVERY_MINUTES", 10)),
 	}, h, st, ls, log.With("component", "tracker"))
 	if err := poller.Init(ctx); err != nil {
 		log.Error("init tracker", "err", err)
@@ -118,6 +118,30 @@ func main() {
 		}
 	}()
 	log.Info("collector started")
+
+	// Exit if polling has stalled, so Docker's restart policy recovers it.
+	// The first poll comes within about a minute of startup.
+	started := time.Now()
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			lastOK, _, _ := poller.Health()
+			if lastOK.Before(started) {
+				lastOK = started
+			}
+			if time.Since(lastOK) > 10*time.Minute {
+				log.Error("no successful poll in 10 minutes; exiting for restart", "last_ok", lastOK)
+				os.Exit(1)
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
