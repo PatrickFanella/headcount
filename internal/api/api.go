@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,7 +61,17 @@ func (s *Server) Handler() http.Handler {
 		}
 		w.Write([]byte("ok"))
 	})
-	mux.Handle("GET /", http.FileServerFS(s.web))
+	files := http.FileServerFS(s.web)
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		// The app's files are not fingerprinted and change with every deploy, so
+		// browsers and Cloudflare revalidate them. Brand assets rarely change.
+		if strings.HasPrefix(r.URL.Path, "/brand/") {
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		files.ServeHTTP(w, r)
+	})
 	var h http.Handler = mux
 	if s.lim != nil {
 		h = s.lim.wrap(h)
