@@ -58,7 +58,11 @@ async function route() {
     else if (parts[0] === 'engagement') await engagementView();
     else if (parts[0] === 'search') await searchView();
     else if (parts[0] === 'category' && parts[1]) await categoryView(parts[1]);
-    else await leaderboardView(parts[0] === 'live');
+    else {
+      // Live now used to be its own page; keep old links working.
+      if (parts[0] === 'live') history.replaceState(null, '', '#/?live=1');
+      await leaderboardView();
+    }
   } catch (e) {
     app.innerHTML = `<div class="empty">Couldn’t load this page: ${esc(e.message)}</div>`;
   }
@@ -191,15 +195,98 @@ async function categoryView(id) {
 
 // ---------- leaderboard ----------
 
-async function leaderboardView(liveOnly) {
-  const [ov, rows, sparks] = await Promise.all([api('/overview'), api(`/channels?limit=500${liveOnly ? '&live=1' : ''}`),
-    api('/sparklines').catch(() => null)]);
+const PAGE_SIZE = 50;
+
+// The score the row shows: the live stream's while live, else the channel's. Too little data sorts
+// with the unscored channels.
+function boardScore(c) {
+  const live = c.live_quotient != null;
+  const value = live ? c.live_quotient : c.quotient;
+  const conf = live ? c.live_confidence : c.quotient_confidence;
+  return { value, conf, sortable: value != null && !(conf != null && conf < 0.1) ? value : null };
+}
+
+const SORTS = {
+  quotient: ['Quotient', (c) => boardScore(c).sortable],
+  viewers: ['Viewers', (c) => c.viewers],
+  streams: ['Streams', (c) => c.scored_streams],
+};
+
+function boardParams() {
+  const p = new URLSearchParams(location.hash.split('?')[1] || '');
+  const sort = SORTS[p.get('sort')] ? p.get('sort') : 'quotient';
+  return { live: p.get('live') === '1', sort, dir: p.get('dir') === 'asc' ? 'asc' : 'desc', page: Math.max(1, parseInt(p.get('page'), 10) || 1) };
+}
+
+function boardHash({ live, sort, dir, page }) {
+  const p = new URLSearchParams();
+  if (live) p.set('live', '1');
+  if (sort !== 'quotient') p.set('sort', sort);
+  if (dir === 'asc') p.set('dir', 'asc');
+  if (page > 1) p.set('page', String(page));
+  const qs = p.toString();
+  return `#/${qs ? `?${qs}` : ''}`;
+}
+
+// Sorting, filtering and paging reuse one fetch for a minute instead of refetching every channel.
+let board = null;
+let scrollToBoard = false;
+
+async function boardData() {
+  if (board && Date.now() - board.at < 60_000) return board;
+  const [ov, rows, sparks] = await Promise.all([api('/overview'), api('/channels?limit=2000'), api('/sparklines').catch(() => null)]);
+  board = { at: Date.now(), ov, rows, sparks };
+  return board;
+}
+
+function pageList(page, pages) {
+  const keep = new Set([1, pages, page - 1, page, page + 1].filter((x) => x >= 1 && x <= pages));
+  const out = [];
+  [...keep].sort((a, b) => a - b).forEach((x, i, all) => {
+    if (i && x - all[i - 1] > 1) out.push(null);
+    out.push(x);
+  });
+  return out;
+}
+
+async function leaderboardView() {
+  const params = boardParams();
+  const { ov, rows: all, sparks } = await boardData();
   const sparkEnd = sparks ? sparks.now : 0, sparkStart = sparkEnd - (sparks?.window_minutes ?? 180) * 60;
   const hours = ov.first_sample ? (new Date(ov.last_sample) - new Date(ov.first_sample)) / 3.6e6 : 0;
+
+  const liveCount = all.filter((c) => c.live_stream_id).length;
+  const key = SORTS[params.sort][1];
+  const sign = params.dir === 'asc' ? 1 : -1;
+  // Array.sort is stable, so ties keep the API's order (quotient, then viewers). Missing values go last either way.
+  const rows = all.filter((c) => !params.live || c.live_stream_id).sort((a, b) => {
+    const ka = key(a), kb = key(b);
+    if (ka == null || kb == null) return (ka == null) - (kb == null);
+    return (ka - kb) * sign;
+  });
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const page = Math.min(params.page, pages);
+  const first = (page - 1) * PAGE_SIZE;
+  const shown = rows.slice(first, first + PAGE_SIZE);
+  const go = (change) => boardHash({ ...params, page, ...change });
+
+  const sortTh = (k, cls = '') => {
+    const active = params.sort === k;
+    const next = active && params.dir === 'desc' ? 'asc' : 'desc';
+    return `<th class="${cls}" aria-sort="${active ? (params.dir === 'asc' ? 'ascending' : 'descending') : 'none'}">
+      <a class="sort${active ? ' active' : ''}" href="${go({ sort: k, dir: next, page: 1 })}">${SORTS[k][0]}<span class="arrow" aria-hidden="true">${active ? (params.dir === 'asc' ? '↑' : '↓') : '↕'}</span></a></th>`;
+  };
+  const pager = pages > 1 ? `<nav class="pager" aria-label="Leaderboard pages">
+      ${page > 1 ? `<a href="${go({ page: page - 1 })}" rel="prev">← Previous</a>` : '<span class="off" aria-hidden="true">← Previous</span>'}
+      ${pageList(page, pages).map((x) => (x == null ? '<span class="gap" aria-hidden="true">…</span>'
+        : x === page ? `<a href="${go({ page: x })}" aria-current="page">${x}</a>` : `<a href="${go({ page: x })}" aria-label="Page ${x}">${x}</a>`)).join('')}
+      ${page < pages ? `<a href="${go({ page: page + 1 })}" rel="next">Next →</a>` : '<span class="off" aria-hidden="true">Next →</span>'}
+    </nav>` : '';
+
   app.innerHTML = `
-    <h1>${liveOnly ? 'Live now' : 'Leaderboard'}</h1>
-    <p class="sub">Channels that have reached the Twitch top 200, ordered by sus quotient. A high quotient means the
-      data has patterns that bots produce; it is not proof of botting.</p>
+    <h1>Leaderboard</h1>
+    <p class="sub">Channels that have reached the Twitch top 200. A high quotient means the data has patterns that bots
+      produce; it is not proof of botting.</p>
     <div class="tiles">
       <div class="tile"><div class="v num">${n(ov.channels)}</div><div class="l">channels tracked</div></div>
       <div class="tile"><div class="v num">${n(ov.live)}</div><div class="l">live now</div></div>
@@ -208,17 +295,22 @@ async function leaderboardView(liveOnly) {
       <div class="tile"><div class="v num">${hours < 48 ? `${hours.toFixed(1)}h` : `${(hours / 24).toFixed(1)}d`}</div><div class="l">of data collected</div></div>
     </div>
     ${hours < 24 ? '<p class="note">Collection started recently. Scores need several full streams and a chat baseline built from many channels, so early values are provisional and change often.</p>' : ''}
+    <div class="board-bar" id="board">
+      <button type="button" class="toggle" id="live-only" aria-pressed="${params.live}">
+        <span class="live-dot" aria-hidden="true"></span>Live only <span class="count num">${n(liveCount)}</span></button>
+      <span class="muted small num" aria-live="polite">${rows.length ? `${n(first + 1)}–${n(first + shown.length)} of ${n(rows.length)}` : 'none'}
+        ${params.live ? 'live channels' : 'channels'}</span>
+    </div>
     ${sparks ? '<p class="muted small table-note">“Last 3h” shows each channel’s viewers over the past three hours, scaled to its own range; a line that stops early means the channel went offline.</p>' : ''}
-    <div class="table-wrap"><table>
+    ${shown.length ? `<div class="table-wrap"><table>
       <thead><tr>
-        <th>#</th><th>Channel</th><th class="r">Viewers</th>${sparks ? '<th title="Viewers over the last 3 hours, 10-minute averages">Last 3h</th>' : ''}<th>Category</th><th>Title</th>
-        <th>Quotient</th><th class="r">Streams</th>
+        <th>#</th><th>Channel</th>${sortTh('viewers', 'r')}${sparks ? '<th title="Viewers over the last 3 hours, 10-minute averages">Last 3h</th>' : ''}<th>Category</th><th>Title</th>
+        ${sortTh('quotient')}${sortTh('streams', 'r')}
       </tr></thead>
-      <tbody>${rows.map((c, i) => {
-        const value = c.live_quotient ?? c.quotient;
-        const conf = c.live_quotient != null ? c.live_confidence : c.quotient_confidence;
+      <tbody>${shown.map((c, i) => {
+        const { value, conf } = boardScore(c);
         return `<tr data-href="#/c/${encodeURIComponent(c.login)}">
-          <td class="num muted">${i + 1}</td>
+          <td class="num muted">${first + i + 1}</td>
           <td>${c.live_stream_id ? '<span class="live-dot" title="live"></span>' : ''}<a href="#/c/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
             <span class="tier">${esc(c.tier)}</span></td>
           <td class="r num">${c.viewers != null ? n(c.viewers) : '<span class="muted">offline</span>'}</td>
@@ -229,7 +321,11 @@ async function leaderboardView(liveOnly) {
           <td class="r num">${n(c.scored_streams)}</td>
         </tr>`;
       }).join('')}</tbody>
-    </table></div>`;
+    </table></div>` : '<div class="empty">No channel is live right now.</div>'}
+    ${pager}`;
+  document.getElementById('live-only').addEventListener('click', () => { location.hash = go({ live: !params.live, page: 1 }); });
+  app.querySelector('.pager')?.addEventListener('click', (e) => { if (e.target.closest('a')) scrollToBoard = true; });
+  if (scrollToBoard) { scrollToBoard = false; document.getElementById('board').scrollIntoView({ block: 'start' }); }
   app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', (e) => {
     if (e.target.closest('a')) return;
     location.hash = tr.dataset.href;

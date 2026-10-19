@@ -218,6 +218,35 @@ a .lane-label:hover { text-decoration: underline; }
 .col.follows { fill: var(--series-3); }
 .col-hover { fill: var(--wash); pointer-events: none; }
 
+/* leaderboard controls */
+.board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 0 10px; scroll-margin-top: 76px; }
+.toggle {
+  display: inline-flex; align-items: center; gap: 2px; min-height: 36px; padding: 6px 12px; cursor: pointer;
+  font: var(--label); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-secondary); background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--hc-radius-control);
+}
+.toggle:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.toggle[aria-pressed="true"] { color: var(--text-primary); border-color: var(--hc-accent); background: color-mix(in srgb, var(--hc-accent) 12%, var(--surface-1)); }
+.toggle .count { margin-left: 6px; color: var(--text-muted); }
+th a.sort { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; }
+th a.sort:hover, th a.sort.active { color: var(--text-primary); }
+th a.sort .arrow { opacity: 0.5; }
+th a.sort.active .arrow { opacity: 1; color: var(--hc-accent-ink); }
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; margin: 14px 0 0; font-size: 13px; }
+.pager a, .pager span {
+  min-width: 36px; min-height: 36px; padding: 6px 10px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--hc-radius-control); text-decoration: none; color: var(--text-secondary);
+}
+.pager a:hover { border-color: var(--border); color: var(--text-primary); }
+.pager a[aria-current="page"] { border-color: var(--hc-accent); color: var(--text-primary); font-weight: 700; }
+.pager .off { color: var(--text-muted); opacity: 0.5; }
+.pager .gap { min-width: 20px; padding: 6px 2px; }
+
+.foot { max-width: 1200px; margin: 24px auto 0; padding: 18px 24px 32px; border-top: 1px solid var(--border); color: var(--text-secondary); font-size: 13px; }
+.foot p { margin: 0 0 6px; max-width: 860px; }
+.foot a { color: var(--hc-accent-ink); }
+.foot a.support { font-weight: 700; }
+
 /* sparklines */
 .table-wrap { overflow-x: auto; border-radius: var(--hc-radius-panel); }
 .spark-cell { padding-top: 4px; padding-bottom: 4px; }
