@@ -57,5 +57,36 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  # Nightly logical dump into ./backups, keeping 7 days. Same host as the
+  # database, so this protects against bad migrations, not disk loss.
+  backup:
+    image: timescale/timescaledb:latest-pg17
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          f=/backups/susq-$$(date -u +%Y%m%dT%H%M%SZ).dump
+          if pg_dump -Fc -f "$$f.tmp" && mv "$$f.tmp" "$$f"; then
+            echo "backup written: $$f"
+          else
+            rm -f "$$f.tmp"; echo "backup failed" >&2
+          fi
+          find /backups -name 'susq-*.dump' -mtime +7 -delete
+          sleep 86400
+        done
+    environment:
+      PGHOST: db
+      PGUSER: susq
+      PGDATABASE: susq
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
 volumes:
   db:
