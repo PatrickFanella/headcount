@@ -70,7 +70,7 @@ func (s *Scorer) runOnce(ctx context.Context) error {
 
 	// The chat collector flushes a minute after it ends; wait a few minutes
 	// so the final chat rows are in.
-	done, err := s.store.StreamsToScore(ctx, time.Now().Add(-3*time.Minute), 200)
+	done, err := s.store.StreamsToScore(ctx, time.Now().Add(-3*time.Minute), Version, 200)
 	if err != nil {
 		return err
 	}

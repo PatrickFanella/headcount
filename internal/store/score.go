@@ -15,12 +15,15 @@ type StreamRef struct {
 	Ended       bool
 }
 
-// StreamsToScore returns finished streams that have no final score yet.
-func (s *Store) StreamsToScore(ctx context.Context, endedBefore time.Time, limit int) ([]StreamRef, error) {
+// StreamsToScore returns finished streams that have no final score yet, or
+// whose final score came from an older scoring version.
+func (s *Store) StreamsToScore(ctx context.Context, endedBefore time.Time, version, limit int) ([]StreamRef, error) {
 	return s.streamRefs(ctx, `
-		SELECT id, channel_id, started_at, first_seen_at, last_seen_at, true FROM streams
-		WHERE scored_at IS NULL AND ended_at IS NOT NULL AND ended_at < $1
-		ORDER BY ended_at LIMIT $2`, endedBefore, limit)
+		SELECT s.id, s.channel_id, s.started_at, s.first_seen_at, s.last_seen_at, true FROM streams s
+		LEFT JOIN stream_scores sc ON sc.stream_id = s.id
+		WHERE s.ended_at IS NOT NULL AND s.ended_at < $1
+		  AND (s.scored_at IS NULL OR sc.version < $2)
+		ORDER BY s.ended_at LIMIT $3`, endedBefore, version, limit)
 }
 
 // LiveStreamsToScore returns open streams observed for at least minMinutes.
