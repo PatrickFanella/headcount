@@ -278,18 +278,20 @@ function renderComponents(el, score) {
     const ca = comps[a] || {}, cb = comps[b] || {};
     return (cb.available ? cb.strength * WEIGHTS[b] : -1) - (ca.available ? ca.strength * WEIGHTS[a] : -1);
   });
-  // Mirrors detect.Combine: the strongest family of evidence counts at most 0.3 plus the
-  // strongest evidence from another family.
-  const ev = keys.filter((k) => comps[k]?.available).map((k) => ({ f: FAMILIES[k], e: WEIGHTS[k] * comps[k].strength }))
-    .sort((a, b) => b.e - a.e);
+  // Mirrors detect.Combine: evidence combines within a family, and each family counts at most
+  // 0.3 plus the strongest other family.
+  const fam = {};
+  for (const k of keys) {
+    if (comps[k]?.available) fam[FAMILIES[k]] = (fam[FAMILIES[k]] ?? 1) * (1 - WEIGHTS[k] * comps[k].strength);
+  }
   let capNote = '';
-  if ((score.version || 0) >= 6 && ev.length) {
-    const top = ev[0].f;
-    const other = ev.find((x) => x.f !== top)?.e || 0;
-    const same = 1 - ev.filter((x) => x.f === top).reduce((k, x) => k * (1 - x.e), 1);
-    if (same > 0.3 + other + 1e-9) {
-      capNote = `<p class="muted">Only one kind of evidence found much here, so it counts for at most ${Math.round(100 * (0.3 + other))}
-        points instead of ${Math.round(100 * same)}. A higher quotient needs a different kind of evidence to agree.</p>`;
+  if ((score.version || 0) >= 8) {
+    const combined = Object.entries(fam).map(([f, keep]) => [f, 1 - keep]).sort((a, b) => b[1] - a[1]);
+    const [top, other] = [combined[0], combined[1]];
+    const limit = 0.3 + (other ? other[1] : 0);
+    if (top && top[1] > limit + 1e-9) {
+      capNote = `<p class="muted">Only one kind of evidence found much here, so it counts for at most ${Math.round(100 * limit)}
+        points instead of ${Math.round(100 * top[1])}. A higher quotient needs a different kind of evidence to agree.</p>`;
     }
   }
   el.innerHTML = capNote + keys.map((k) => {

@@ -300,3 +300,17 @@ func TestCombineSameFamilyDoesNotCorroborate(t *testing.T) {
 		t.Errorf("chat and follow lift alone gave %.1f, want %.0f", q, 100*SingleCap)
 	}
 }
+
+func TestCombineIsDeterministic(t *testing.T) {
+	comps := map[string]Component{
+		"periodic_spikes": {Available: true, Strength: 0.49 / 0.6}, "synchronized_spikes": {Available: true, Strength: 1},
+		"unexplained_jumps": {Available: true, Strength: 1}, "start_ramp": {Available: true, Strength: 1},
+		"chat_engagement": {Available: true, Strength: 1},
+	}
+	first, _ := Combine(comps, 200)
+	for range 500 {
+		if q, _ := Combine(comps, 200); q != first {
+			t.Fatalf("quotient %v then %v", first, q)
+		}
+	}
+}

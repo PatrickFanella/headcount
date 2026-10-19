@@ -204,10 +204,10 @@ func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat,
 			HAVING count(*) >= 30
 		)
 		SELECT per.lang, per.game_id, coalesce(g.game_name, ''), per.viewers, per.per_k
-		FROM per LEFT JOIN (
-			SELECT DISTINCT ON (game_id) game_id, game_name FROM streams
-			WHERE game_id IS NOT NULL AND game_name IS NOT NULL
-			ORDER BY game_id, last_seen_at DESC) g ON g.game_id = per.game_id`, since)
+		FROM per LEFT JOIN LATERAL (
+			SELECT game_name FROM streams
+			WHERE game_id = per.game_id AND game_name IS NOT NULL
+			ORDER BY last_seen_at DESC LIMIT 1) g ON true`, since)
 	if err != nil {
 		return nil, err
 	}

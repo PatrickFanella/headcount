@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // SharedAccount is a young or suspended account that chatted in this stream,
@@ -16,20 +19,14 @@ type SharedAccount struct {
 // created after youngSince or are suspended/deleted, together with the other
 // channels each chatted in between from and to.
 func (s *Store) SharedYoungChatters(ctx context.Context, streamID, channelID int64, youngSince, from, to time.Time) (young int, shared []SharedAccount, err error) {
-	if err = s.Pool.QueryRow(ctx, `
-		SELECT count(*) FROM stream_chatters sc JOIN twitch_users u ON u.id = sc.user_id
-		WHERE sc.stream_id = $1 AND (u.created_at > $2 OR u.missing)`, streamID, youngSince).Scan(&young); err != nil {
-		return 0, nil, err
-	}
+	// One row per young chatter; channels is empty when it chatted nowhere else.
 	rows, err := s.Pool.Query(ctx, `
-		WITH young AS (
-			SELECT sc.user_id FROM stream_chatters sc JOIN twitch_users u ON u.id = sc.user_id
-			WHERE sc.stream_id = $1 AND (u.created_at > $2 OR u.missing)
-		)
-		SELECT y.user_id, array_agg(DISTINCT c.channel_id)
-		FROM young y JOIN stream_chatters c ON c.user_id = y.user_id
-		WHERE c.channel_id <> $3 AND c.last_seen_at BETWEEN $4 AND $5
-		GROUP BY y.user_id`, streamID, youngSince, channelID, from, to)
+		SELECT y.user_id,
+		       coalesce((SELECT array_agg(DISTINCT c.channel_id) FROM stream_chatters c
+		                 WHERE c.user_id = y.user_id AND c.channel_id <> $3
+		                   AND c.last_seen_at BETWEEN $4 AND $5), '{}')
+		FROM stream_chatters y JOIN twitch_users u ON u.id = y.user_id
+		WHERE y.stream_id = $1 AND (u.created_at > $2 OR u.missing)`, streamID, youngSince, channelID, from, to)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -39,9 +36,27 @@ func (s *Store) SharedYoungChatters(ctx context.Context, streamID, channelID int
 		if err := rows.Scan(&a.UserID, &a.Channels); err != nil {
 			return 0, nil, err
 		}
-		shared = append(shared, a)
+		young++
+		if len(a.Channels) > 0 {
+			shared = append(shared, a)
+		}
 	}
 	return young, shared, rows.Err()
+}
+
+// GameName returns the most recent name recorded for a category id.
+func (s *Store) GameName(ctx context.Context, gameID string) (string, error) {
+	if gameID == "" {
+		return "", nil
+	}
+	var name string
+	err := s.Pool.QueryRow(ctx, `
+		SELECT game_name FROM streams WHERE game_id = $1 AND game_name IS NOT NULL
+		ORDER BY last_seen_at DESC LIMIT 1`, gameID).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
 }
 
 // ChannelLogins maps channel ids to logins.

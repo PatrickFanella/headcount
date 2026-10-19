@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -15,13 +16,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"git.subcult.tv/subculture-collective/sus-quotient/internal/detect"
 	"git.subcult.tv/subculture-collective/sus-quotient/internal/store"
 )
 
 // Version increments whenever detector logic or weights change, so old
 // scores can be told apart and recomputed.
-const Version = 7
+const Version = 8
 
 const (
 	liveEvery       = 15 * time.Minute
@@ -249,7 +252,12 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 	comps["synchronized_spikes"] = sync
 
 	if stats, ok := detect.ChatEngagement(d, p); ok && s.baseline.ok() {
-		e := s.baseline.Expect(r.Language, mainGame(ser.Viewers), "")
+		game := mainGame(ser.Viewers)
+		name, err := s.store.GameName(ctx, game)
+		if err != nil {
+			return err
+		}
+		e := s.baseline.Expect(r.Language, game, name)
 		z := e.Z(stats.MedianViewers, stats.ChattersPerK)
 		langFlag := 0.0
 		if e.PerLanguage {
@@ -296,8 +304,12 @@ func (s *Scorer) sharedAccounts(ctx context.Context, r store.StreamRef, chatters
 	}
 	if pruned {
 		raw, err := s.store.PreviousComponent(ctx, r.ID, "shared_accounts")
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			// Abort rather than overwrite a result that cannot be recomputed.
+			return detect.Component{}, err
+		}
 		var c detect.Component
-		if err != nil || raw == nil || json.Unmarshal(raw, &c) != nil {
+		if raw == nil || json.Unmarshal(raw, &c) != nil {
 			return detect.Component{Reason: "chatter list pruned"}, nil
 		}
 		return c, nil

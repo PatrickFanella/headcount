@@ -53,9 +53,9 @@ detectors each rate one kind of evidence from 0 to 1:
 
 They combine as a weighted noisy-OR: `quotient = 100 × (1 − Π(1 − eᵢ))` with
 `eᵢ = wᵢ·sᵢ`. Detectors are grouped into families that read the same evidence
-(viewer shape, spike response, chat, accounts, follows). The strongest
-family's combined evidence is capped at 0.3 plus the strongest evidence from
-another family, so one line of evidence gives at most 30. Spike-based
+(viewer shape, spike response, chat, accounts, follows); evidence within a
+family combines by noisy-OR. Each family is capped at 0.3 plus the strongest
+other family, so one line of evidence gives at most 30. Spike-based
 detectors are unavailable when the median change between Helix updates
 exceeds 8% (the size of spike the detectors look for), as for channels whose count jumps randomly on every refresh. Confidence is the share of total weight that
 could be evaluated, scaled by observed minutes (full at 3 hours). A channel's

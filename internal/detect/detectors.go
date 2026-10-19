@@ -1,7 +1,7 @@
 package detect
 
 import (
-	"cmp"
+	"maps"
 	"math"
 	"slices"
 )
@@ -510,17 +510,14 @@ var Families = map[string]string{
 const SingleCap = 0.3
 
 // Combine merges components with a weighted noisy-OR, giving a quotient from
-// 0 to 100. Each component contributes evidence w*strength. The strongest is
-// capped at SingleCap plus the strongest evidence from another family, so one
-// line of evidence alone gives at most 30. Confidence reflects how much of the total weight could be
-// evaluated and how long the stream was observed.
+// 0 to 100. Each component contributes evidence w*strength; evidence within a
+// family combines by noisy-OR. Every family is then capped at SingleCap plus
+// the strongest other family, so one line of evidence alone gives at most 30.
+// Confidence reflects how much of the total weight could be evaluated and how
+// long the stream was observed.
 func Combine(components map[string]Component, minutes int) (quotient, confidence float64) {
-	type evidence struct {
-		family string
-		e      float64
-	}
 	var availW, totalW float64
-	var ev []evidence
+	keepByFamily := map[string]float64{}
 	for name, w := range Weights {
 		totalW += w
 		c, ok := components[name]
@@ -528,33 +525,23 @@ func Combine(components map[string]Component, minutes int) (quotient, confidence
 			continue
 		}
 		availW += w
-		ev = append(ev, evidence{Families[name], w * math.Max(0, math.Min(1, c.Strength))})
-	}
-	slices.SortFunc(ev, func(a, b evidence) int { return cmp.Compare(b.e, a.e) })
-	if len(ev) > 0 {
-		other := 0.0
-		for _, x := range ev[1:] {
-			if x.family != ev[0].family {
-				other = x.e
-				break
-			}
+		f := Families[name]
+		if _, ok := keepByFamily[f]; !ok {
+			keepByFamily[f] = 1
 		}
-		// Same-family evidence still adds, but only within the cap.
-		limit := SingleCap + other
-		sameKeep := 1.0
-		rest := ev[:0:0]
-		for _, x := range ev {
-			if x.family == ev[0].family {
-				sameKeep *= 1 - x.e
-			} else {
-				rest = append(rest, x)
-			}
-		}
-		ev = append(rest, evidence{ev[0].family, math.Min(1-sameKeep, limit)})
+		keepByFamily[f] *= 1 - w*math.Max(0, math.Min(1, c.Strength))
 	}
 	keep := 1.0
-	for _, x := range ev {
-		keep *= 1 - x.e
+	// Sorted so floating-point products do not depend on map order.
+	for _, f := range slices.Sorted(maps.Keys(keepByFamily)) {
+		k := keepByFamily[f]
+		other := 0.0
+		for g, kg := range keepByFamily {
+			if g != f {
+				other = math.Max(other, 1-kg)
+			}
+		}
+		keep *= 1 - math.Min(1-k, SingleCap+other)
 	}
 	quotient = 100 * (1 - keep)
 	confidence = (availW / totalW) * math.Min(1, float64(minutes)/180)

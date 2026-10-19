@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand/v2"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,38 @@ type conn struct {
 	channels map[string]bool
 
 	connectedAt atomic.Int64 // unix nanos of the current connection; 0 while down
+	lastRx      atomic.Int64 // unix nanos of the last line received
+	maxGap      atomic.Int64 // longest silence between received lines since the last flush
+}
+
+// maxRxGap is the longest silence a healthy connection shows: the client
+// pings after 15 s idle and Twitch answers within seconds.
+const maxRxGap = 25 * time.Second
+
+// touch records that the connection received a line.
+func (cn *conn) touch() {
+	now := time.Now().UnixNano()
+	if prev := cn.lastRx.Swap(now); prev != 0 {
+		gap := now - prev
+		for {
+			cur := cn.maxGap.Load()
+			if gap <= cur || cn.maxGap.CompareAndSwap(cur, gap) {
+				break
+			}
+		}
+	}
+}
+
+// receiving reports whether the connection was up and hearing from Twitch
+// for the whole minute, and resets the gap tracker for the next one.
+func (cn *conn) receiving(minute time.Time, now time.Time) bool {
+	gap := time.Duration(cn.maxGap.Swap(0))
+	up := cn.connectedAt.Load()
+	last := cn.lastRx.Load()
+	if up == 0 || last == 0 || time.Unix(0, up).After(minute) {
+		return false
+	}
+	return gap < maxRxGap && now.Sub(time.Unix(0, last)) < maxRxGap
 }
 
 // joinedRoom records when Twitch confirmed a join with ROOMSTATE on a
@@ -72,6 +105,7 @@ type Collector struct {
 	events    []store.Event
 	pending   map[int64]struct{}
 	confirmed map[string]joinedRoom // by login
+	joinedOn  map[string]*conn      // joined logins, mirrored from joined under mu
 
 	joinMu sync.Mutex
 	conns  []*conn
@@ -92,6 +126,7 @@ func New(ls *live.State, s *store.Store, h *helix.Client, log *slog.Logger) *Col
 		roomState: map[int64]map[string]int{},
 		pending:   map[int64]struct{}{},
 		confirmed: map[string]joinedRoom{},
+		joinedOn:  map[string]*conn{},
 		joined:    map[string]*conn{},
 	}
 }
@@ -116,12 +151,22 @@ func (c *Collector) Run(ctx context.Context) {
 func (c *Collector) newConn() *conn {
 	client := twitch.NewClient(fmt.Sprintf("justinfan%d", 10000+rand.IntN(89999)), "oauth:anonymous")
 	client.Capabilities = []string{twitch.TagsCapability, twitch.CommandsCapability}
-	client.OnPrivateMessage(c.onPrivmsg)
-	client.OnUserNoticeMessage(c.onUserNotice)
-	client.OnClearChatMessage(c.onClearChat)
 	cn := &conn{client: client, channels: map[string]bool{}}
-	client.OnRoomStateMessage(func(m twitch.RoomStateMessage) { c.onRoomState(cn, m) })
-	client.OnConnect(func() { cn.connectedAt.Store(time.Now().UnixNano()) })
+	client.OnPrivateMessage(func(m twitch.PrivateMessage) { cn.touch(); c.onPrivmsg(m) })
+	client.OnUserNoticeMessage(func(m twitch.UserNoticeMessage) { cn.touch(); c.onUserNotice(m) })
+	client.OnClearChatMessage(func(m twitch.ClearChatMessage) { cn.touch(); c.onClearChat(m) })
+	client.OnRoomStateMessage(func(m twitch.RoomStateMessage) { cn.touch(); c.onRoomState(cn, m) })
+	client.OnPingMessage(func(twitch.PingMessage) { cn.touch() })
+	client.OnPongMessage(func(twitch.PongMessage) { cn.touch() })
+	client.OnUserJoinMessage(func(twitch.UserJoinMessage) { cn.touch() })
+	client.OnConnect(func() {
+		cn.maxGap.Store(0)
+		cn.connectedAt.Store(time.Now().UnixNano())
+		cn.touch()
+	})
+	// Connect reconnects internally after ping timeouts and read errors;
+	// treat a RECONNECT notice as down until the next welcome.
+	client.OnReconnectMessage(func(twitch.ReconnectMessage) { cn.connectedAt.Store(0) })
 	go func() {
 		backoff := time.Second
 		for {
@@ -175,6 +220,7 @@ func (c *Collector) sync() {
 			delete(c.joined, login)
 			c.mu.Lock()
 			delete(c.confirmed, login)
+			delete(c.joinedOn, login)
 			c.mu.Unlock()
 			parts++
 		}
@@ -196,6 +242,9 @@ func (c *Collector) sync() {
 		target.client.Join(login)
 		target.channels[login] = true
 		c.joined[login] = target
+		c.mu.Lock()
+		c.joinedOn[login] = target
+		c.mu.Unlock()
 		joins++
 	}
 	c.mu.Lock()
@@ -350,8 +399,11 @@ func (c *Collector) onRoomState(cn *conn, msg twitch.RoomStateMessage) {
 	defer c.mu.Unlock()
 	login := strings.ToLower(msg.Channel)
 	since := time.Unix(0, cn.connectedAt.Load())
-	if j, ok := c.confirmed[login]; !ok || j.cn != cn || j.at.Before(since) {
-		c.confirmed[login] = joinedRoom{room: room, cn: cn, at: time.Now()}
+	// A ROOMSTATE can arrive after we departed; only confirm current joins.
+	if c.joinedOn[login] == cn {
+		if j, ok := c.confirmed[login]; !ok || j.cn != cn || j.at.Before(since) {
+			c.confirmed[login] = joinedRoom{room: room, cn: cn, at: time.Now()}
+		}
 	}
 	if len(msg.State) == 0 {
 		return
@@ -386,15 +438,25 @@ func (c *Collector) flushLoop(ctx context.Context) {
 }
 
 func (c *Collector) flush(ctx context.Context, minute time.Time) {
+	c.joinMu.Lock()
+	conns := slices.Clone(c.conns)
+	c.joinMu.Unlock()
+	now := time.Now()
+	healthy := map[*conn]bool{}
+	for _, cn := range conns {
+		healthy[cn] = cn.receiving(minute, now)
+	}
+
 	c.mu.Lock()
 	aggs := c.aggs
 	events := c.events
 	c.aggs = map[int64]*minuteAgg{}
 	c.events = nil
-	for _, j := range c.confirmed {
-		// The join must be confirmed on the current connection, before the minute began.
+	for login, j := range c.confirmed {
+		// The join must be current and confirmed on this connection before the
+		// minute began, and the connection must have kept receiving all minute.
 		up := j.cn.connectedAt.Load()
-		if up == 0 || time.Unix(0, up).After(minute) || j.at.After(minute) || j.at.Before(time.Unix(0, up)) {
+		if c.joinedOn[login] != j.cn || !healthy[j.cn] || j.at.After(minute) || j.at.Before(time.Unix(0, up)) {
 			continue
 		}
 		if _, ok := aggs[j.room]; !ok && c.live.StreamID(j.room) != 0 {

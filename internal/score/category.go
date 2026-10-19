@@ -132,6 +132,10 @@ func (b *baselines) Expect(lang, gameID, gameName string) Expectation {
 		gameName = b.offsets.names[gameID]
 		e.Category = gameName
 	}
+	if gameName == "" {
+		// Unknown category: no family can be assumed, so only the language line applies.
+		return e
+	}
 	e.Family = familyOf(gameName)
 	total := clamp(b.offsets.family[e.Family]+b.offsets.category[gameID], maxOffsetSD)
 	e.FamilyOffset = b.offsets.family[e.Family] * line.sd
