@@ -26,6 +26,9 @@ type Server struct {
 	overviewMu  sync.Mutex
 	overviewAt  time.Time
 	overviewRaw json.RawMessage
+
+	cacheMu sync.Mutex
+	cache   map[string]cacheEntry
 }
 
 func New(db *pgxpool.Pool, web fs.FS, log *slog.Logger) *Server {
@@ -44,6 +47,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/channels", s.channels)
 	mux.HandleFunc("GET /api/channels/{login}", s.channel)
 	mux.HandleFunc("GET /api/streams/{id}", s.stream)
+	mux.HandleFunc("GET /api/streams/{id}/onsets", s.streamOnsets)
+	mux.HandleFunc("GET /api/streams/{id}/account-ages", s.streamAccountAges)
+	mux.HandleFunc("GET /api/engagement", s.engagement)
+	mux.HandleFunc("GET /api/sparklines", s.sparklines)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.Ping(r.Context()); err != nil {
 			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
@@ -162,7 +169,11 @@ func (s *Server) channel(w http.ResponseWriter, r *http.Request) {
 				SELECT s.id::text AS id, s.started_at, s.ended_at, s.title, s.game_name, s.peak_viewers,
 				       sc.quotient, sc.confidence, sc.final, sc.minutes,
 				       (SELECT round(avg(v.viewers)) FROM viewer_samples v WHERE v.channel_id = s.channel_id AND v.stream_id = s.id
-				        AND v.ts BETWEEN s.first_seen_at AND s.last_seen_at) AS avg_viewers
+				        AND v.ts BETWEEN s.first_seen_at AND s.last_seen_at) AS avg_viewers,
+				       (SELECT f.total FROM follower_samples f WHERE f.channel_id = s.channel_id
+				        AND f.ts BETWEEN s.first_seen_at - interval '5 minutes' AND s.last_seen_at ORDER BY f.ts DESC LIMIT 1)
+				     - (SELECT f.total FROM follower_samples f WHERE f.channel_id = s.channel_id
+				        AND f.ts BETWEEN s.first_seen_at - interval '5 minutes' AND s.last_seen_at ORDER BY f.ts LIMIT 1) AS follows_gained
 				FROM streams s LEFT JOIN stream_scores sc ON sc.stream_id = s.id
 				WHERE s.channel_id = c.id::bigint ORDER BY s.started_at DESC LIMIT 50) x)
 		)
