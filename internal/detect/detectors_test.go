@@ -149,3 +149,46 @@ func TestCombine(t *testing.T) {
 		t.Errorf("confidence %.2f", c)
 	}
 }
+
+func TestSynchrony(t *testing.T) {
+	// Own spikes every 30 minutes over 8 hours.
+	var own []int64
+	for m := int64(0); m < 480; m += 30 {
+		own = append(own, 1000+m)
+	}
+	shifted := func(offset int64) []int64 {
+		var out []int64
+		for _, m := range own {
+			out = append(out, m+offset)
+		}
+		return out
+	}
+	unrelated := Partner{Login: "a", OverlapMinutes: 480, Onsets: []int64{1007, 1101, 1203, 1290, 1377}}
+	twin := Partner{Login: "twin", OverlapMinutes: 480, Onsets: shifted(1)}
+	c := Synchrony(own, []Partner{unrelated}, 2)
+	if c.Strength > 0.1 {
+		t.Errorf("unrelated partner flagged: %v", c.Values)
+	}
+	c = Synchrony(own, []Partner{unrelated, twin}, 2)
+	if c.Strength < 0.9 || c.Reason != "best partner: twin" {
+		t.Errorf("twin not flagged: %v %q", c.Values, c.Reason)
+	}
+	// Everyone spiking together looks platform-wide.
+	var crowd []Partner
+	for i := range 10 {
+		crowd = append(crowd, Partner{Login: string(rune('b' + i)), OverlapMinutes: 480, Onsets: shifted(0)})
+	}
+	c = Synchrony(own, crowd, 2)
+	if c.Values["platform_wide"] != 1 || c.Strength > 0.25 {
+		t.Errorf("platform-wide not discounted: %v", c.Values)
+	}
+}
+
+func TestBinomTail(t *testing.T) {
+	if p := binomTail(10, 0, 0.3); p != 1 {
+		t.Errorf("P(X>=0) = %v", p)
+	}
+	if p := binomTail(10, 10, 0.5); math.Abs(p-1.0/1024) > 1e-12 {
+		t.Errorf("P(X>=10) = %v", p)
+	}
+}

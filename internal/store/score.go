@@ -271,3 +271,72 @@ func (s *Store) ApplyTiers(ctx context.Context, lowQuotient, restoreQuotient flo
 	}
 	return demoted, tag.RowsAffected(), nil
 }
+
+type Onset struct {
+	TS  time.Time
+	Rel float64
+}
+
+// ReplaceOnsets stores a stream's spike onsets, replacing earlier ones.
+func (s *Store) ReplaceOnsets(ctx context.Context, streamID, channelID int64, onsets []Onset) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM spike_onsets WHERE stream_id = $1`, streamID); err != nil {
+		return err
+	}
+	if len(onsets) > 0 {
+		ts := make([]time.Time, len(onsets))
+		rel := make([]float32, len(onsets))
+		for i, o := range onsets {
+			ts[i], rel[i] = o.TS, float32(o.Rel)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO spike_onsets (stream_id, channel_id, ts, rel)
+			SELECT $1, $2, ts, rel FROM unnest($3::timestamptz[], $4::real[]) AS u(ts, rel)
+			ON CONFLICT DO NOTHING`, streamID, channelID, ts, rel); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+type PartnerOnsets struct {
+	ChannelID      int64
+	Login          string
+	OverlapMinutes int
+	Onsets         []time.Time
+}
+
+// PartnerOnsets returns, for every other channel live during [from, to], its
+// spike onsets in that window and how many minutes its streams overlapped.
+func (s *Store) PartnerOnsets(ctx context.Context, channelID int64, from, to time.Time) ([]PartnerOnsets, error) {
+	rows, err := s.Pool.Query(ctx, `
+		WITH overlap AS (
+			SELECT s.channel_id,
+			       sum(extract(epoch FROM LEAST(s.last_seen_at, $3) - GREATEST(s.first_seen_at, $2)) / 60)::int AS minutes
+			FROM streams s
+			WHERE s.channel_id <> $1 AND s.first_seen_at < $3 AND s.last_seen_at > $2
+			GROUP BY s.channel_id
+		)
+		SELECT o.channel_id, c.login, o.minutes,
+		       coalesce((SELECT array_agg(so.ts ORDER BY so.ts) FROM spike_onsets so
+		                 WHERE so.channel_id = o.channel_id AND so.ts BETWEEN $2 AND $3), '{}')
+		FROM overlap o JOIN channels c ON c.id = o.channel_id
+		WHERE o.minutes > 0`, channelID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PartnerOnsets
+	for rows.Next() {
+		var p PartnerOnsets
+		if err := rows.Scan(&p.ChannelID, &p.Login, &p.OverlapMinutes, &p.Onsets); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

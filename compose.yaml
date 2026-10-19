@@ -33,6 +33,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://susq:${POSTGRES_PASSWORD}@db:5432/susq?sslmode=disable
+      SEED_LOGINS: ${SEED_LOGINS:-}
     depends_on:
       db:
         condition: service_healthy

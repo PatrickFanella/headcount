@@ -15,7 +15,7 @@ import (
 
 // Version increments whenever detector logic or weights change, so old
 // scores can be told apart and recomputed.
-const Version = 1
+const Version = 2
 
 const (
 	liveEvery       = 15 * time.Minute
@@ -23,6 +23,7 @@ const (
 	newAccountAge   = 30 * 24 * time.Hour
 	lowQuotient     = 15
 	restoreQuotient = 30
+	spikeThreshold  = 0.08
 )
 
 type Scorer struct {
@@ -185,6 +186,12 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 	}
 	comps["follow_bursts"], comps["follower_purge"] = detect.FollowAnomalies(d)
 
+	sync, err := s.synchrony(ctx, r, p)
+	if err != nil {
+		return err
+	}
+	comps["synchronized_spikes"] = sync
+
 	if stats, ok := detect.ChatEngagement(d, p); ok && s.baseline.ok {
 		z := s.baseline.z(stats.MedianViewers, stats.ChattersPerK)
 		comps["chat_engagement"] = detect.ChatResidualComponent(z, d.RestrictedChat, map[string]float64{
@@ -207,6 +214,37 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 		StreamID: r.ID, ChannelID: r.ChannelID, Version: Version, Minutes: minutes,
 		Quotient: q, Confidence: conf, Final: r.Ended, Components: comps,
 	})
+}
+
+// synchrony stores this stream's spike onsets and compares them with every
+// other channel live at the same time.
+func (s *Scorer) synchrony(ctx context.Context, r store.StreamRef, p detect.Prepared) (detect.Component, error) {
+	start := r.FirstSeenAt.Truncate(time.Minute)
+	idx := detect.SpikeOnsets(p, spikeThreshold)
+	onsets := make([]store.Onset, len(idx))
+	own := make([]int64, len(idx))
+	for i, m := range idx {
+		ts := start.Add(time.Duration(m) * time.Minute)
+		onsets[i] = store.Onset{TS: ts, Rel: p.Rel[m]}
+		own[i] = ts.Unix() / 60
+	}
+	if err := s.store.ReplaceOnsets(ctx, r.ID, r.ChannelID, onsets); err != nil {
+		return detect.Component{}, err
+	}
+	rows, err := s.store.PartnerOnsets(ctx, r.ChannelID, r.FirstSeenAt, r.LastSeenAt)
+	if err != nil {
+		return detect.Component{}, err
+	}
+	partners := make([]detect.Partner, len(rows))
+	for i, row := range rows {
+		mins := make([]int64, len(row.Onsets))
+		for j, t := range row.Onsets {
+			mins[j] = t.Unix() / 60
+		}
+		partners[i] = detect.Partner{Login: row.Login, OverlapMinutes: row.OverlapMinutes, Onsets: mins}
+	}
+	// Helix refreshes every 3-5 minutes, so onsets can be off by a few minutes.
+	return detect.Synchrony(own, partners, 3), nil
 }
 
 func round(x float64) float64 { return math.Round(x*1000) / 1000 }

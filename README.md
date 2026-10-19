@@ -39,6 +39,7 @@ detectors each rate one kind of evidence from 0 to 1:
 | Component | Weight | Evidence |
 |---|---|---|
 | `periodic_spikes` | 0.6 | Upward viewer spikes that repeat at a fixed period and return to baseline |
+| `synchronized_spikes` | 0.5 | Spikes that start in the same minutes as another channel's more often than chance (binomial test, Bonferroni-corrected; discounted when many channels spike together) |
 | `spike_chat_lift` | 0.5 | Chat does not grow when viewers spike |
 | `chat_engagement` | 0.5 | Chatters per 1k viewers far below a peer baseline fitted on log(viewers) |
 | `follower_purge` | 0.4 | Large follower drops (Twitch removing fake follows) |
@@ -92,7 +93,8 @@ open http://localhost:18091/        # dashboard
 
 Postgres listens on `127.0.0.1:55432`. Optional collector settings:
 `TOP_N` (200), `END_GRACE_MINUTES` (4), `COLD_EVERY_MINUTES` (10),
-`LOG_LEVEL=debug`.
+`LOG_LEVEL=debug`, and `SEED_LOGINS` (comma-separated channels to track before
+they reach the top 200).
 
 ### Tests
 

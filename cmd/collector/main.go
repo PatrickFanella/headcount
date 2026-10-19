@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,6 +84,11 @@ func main() {
 		log.Error("init tracker", "err", err)
 		os.Exit(1)
 	}
+	if seeds := os.Getenv("SEED_LOGINS"); seeds != "" {
+		if err := seed(ctx, h, st, strings.Split(seeds, ",")); err != nil {
+			log.Warn("seed channels", "err", err)
+		}
+	}
 	collector := chat.New(ls, st, h, log.With("component", "chat"))
 	scorer := score.New(st, log.With("component", "score"))
 
@@ -117,4 +123,32 @@ func main() {
 	defer cancel()
 	srv.Shutdown(shutdown)
 	log.Info("collector stopped")
+}
+
+// seed adds named channels to tracking before they reach the top list.
+func seed(ctx context.Context, h *helix.Client, st *store.Store, logins []string) error {
+	var clean []string
+	for _, l := range logins {
+		if l = strings.ToLower(strings.TrimSpace(l)); l != "" {
+			clean = append(clean, l)
+		}
+	}
+	for start := 0; start < len(clean); start += 100 {
+		users, err := h.UsersByLogin(ctx, clean[start:min(start+100, len(clean))])
+		if err != nil {
+			return err
+		}
+		entries := make([]store.TopEntry, 0, len(users))
+		for _, u := range users {
+			id, err := strconv.ParseInt(u.ID, 10, 64)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, store.TopEntry{ID: id, Login: u.Login, DisplayName: u.DisplayName})
+		}
+		if _, err := st.SeedChannels(ctx, time.Now().UTC().Truncate(time.Minute), entries); err != nil {
+			return err
+		}
+	}
+	return nil
 }

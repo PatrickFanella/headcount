@@ -22,6 +22,7 @@ async function api(path) {
 
 const COMPONENTS = {
   periodic_spikes: ['Periodic spikes', 'Viewer spikes that repeat at a fixed interval and return to the same baseline'],
+  synchronized_spikes: ['Synchronized spikes', 'Viewer spikes that start in the same minutes as another channel’s, beyond chance'],
   spike_chat_lift: ['Chat during spikes', 'Whether chat grows when viewers spike; bot viewers do not chat'],
   chat_engagement: ['Chat engagement', 'Chatters per 1,000 viewers compared with streams of the same size'],
   follower_purge: ['Follower purges', 'Large follower drops, as when Twitch removes fake follows'],
@@ -33,7 +34,7 @@ const COMPONENTS = {
   start_ramp: ['Start ramp', 'How fast viewers arrive after going live'],
 };
 const WEIGHTS = {
-  periodic_spikes: 0.6, spike_chat_lift: 0.5, chat_engagement: 0.5, follower_purge: 0.4, chatter_accounts: 0.4,
+  periodic_spikes: 0.6, synchronized_spikes: 0.5, spike_chat_lift: 0.5, chat_engagement: 0.5, follower_purge: 0.4, chatter_accounts: 0.4,
   follow_bursts: 0.3, unexplained_jumps: 0.3, spike_follow_lift: 0.25, chat_repetition: 0.15, start_ramp: 0.1,
 };
 
@@ -228,6 +229,7 @@ function renderComponents(el, score) {
       <div class="name">${name}<small>${desc}</small></div>
       ${c.available ? `<div class="bar" role="img" aria-label="strength ${pct(c.strength)}"><div style="width:${Math.max(1, c.strength * 100)}%"></div></div>`
         : `<div class="muted">not available${c.reason ? ` – ${esc(c.reason)}` : ''}</div>`}
+      ${c.available && c.reason ? `<div class="detail">${esc(c.reason)}</div>` : ''}
       <div class="num r" style="text-align:right">${c.available ? pct(c.strength) : ''}<div class="muted" style="font-size:11px">weight ${WEIGHTS[k]}</div></div>
       ${details ? `<div class="detail">${esc(details)}</div>` : ''}
     </div>`;
@@ -395,7 +397,7 @@ function aboutView() {
     <h1>How scoring works</h1>
     <p class="sub">Every channel that reaches the Twitch top 200 is tracked from then on. Each minute the collector records its
       viewer count (Twitch Helix API), its chat activity (anonymous IRC), and its follower total.</p>
-    <p>When a stream ends, ten detectors each rate one kind of evidence from 0 to 1. They are combined with fixed weights
+    <p>When a stream ends, eleven detectors each rate one kind of evidence from 0 to 1. They are combined with fixed weights
       (a weighted noisy-OR) into a quotient from 0 to 100. Live streams get a provisional score after an hour.</p>
     <ul>${Object.entries(COMPONENTS).map(([k, [name, desc]]) => `<li><b>${name}</b> (weight ${WEIGHTS[k]}): ${desc}.</li>`).join('')}</ul>
     <p><b>Confidence</b> reflects how many detectors had enough data and how long the stream was observed. A channel’s

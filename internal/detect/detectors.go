@@ -383,16 +383,17 @@ func AccountAgeComponent(chatters, newAccounts, missing int) Component {
 
 // Weights for combining components. They are hand-set and uncalibrated.
 var Weights = map[string]float64{
-	"periodic_spikes":   0.6,
-	"spike_chat_lift":   0.5,
-	"chat_engagement":   0.5,
-	"follower_purge":    0.4,
-	"chatter_accounts":  0.4,
-	"follow_bursts":     0.3,
-	"unexplained_jumps": 0.3,
-	"spike_follow_lift": 0.25,
-	"chat_repetition":   0.15,
-	"start_ramp":        0.1,
+	"periodic_spikes":     0.6,
+	"synchronized_spikes": 0.5,
+	"spike_chat_lift":     0.5,
+	"chat_engagement":     0.5,
+	"follower_purge":      0.4,
+	"chatter_accounts":    0.4,
+	"follow_bursts":       0.3,
+	"unexplained_jumps":   0.3,
+	"spike_follow_lift":   0.25,
+	"chat_repetition":     0.15,
+	"start_ramp":          0.1,
 }
 
 // Combine merges components with a weighted noisy-OR, giving a quotient from

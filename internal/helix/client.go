@@ -327,6 +327,24 @@ type User struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// UsersByLogin looks up at most 100 users by login name.
+func (c *Client) UsersByLogin(ctx context.Context, logins []string) ([]User, error) {
+	if len(logins) > 100 {
+		return nil, fmt.Errorf("users: %d logins, max 100", len(logins))
+	}
+	q := url.Values{}
+	for _, l := range logins {
+		q.Add("login", l)
+	}
+	var r struct {
+		Data []User `json:"data"`
+	}
+	if err := c.get(ctx, PriorityHigh, "/users", q, &r); err != nil {
+		return nil, err
+	}
+	return r.Data, nil
+}
+
 // Users looks up at most 100 users by ID. Suspended or deleted accounts are
 // omitted from the response.
 func (c *Client) Users(ctx context.Context, ids []string) ([]User, error) {

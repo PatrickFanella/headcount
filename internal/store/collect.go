@@ -38,6 +38,22 @@ func (s *Store) UpsertTopChannels(ctx context.Context, t time.Time, top []TopEnt
 	return err
 }
 
+// SeedChannels adds channels to the tracked tier without a top-list
+// appearance. Existing channels are left unchanged.
+func (s *Store) SeedChannels(ctx context.Context, t time.Time, chans []TopEntry) (int64, error) {
+	var added int64
+	for _, c := range chans {
+		tag, err := s.Pool.Exec(ctx, `
+			INSERT INTO channels (id, login, display_name, tier, first_seen_at)
+			VALUES ($1, $2, $3, 'tracked', $4) ON CONFLICT (id) DO NOTHING`, c.ID, c.Login, c.DisplayName, t)
+		if err != nil {
+			return added, err
+		}
+		added += tag.RowsAffected()
+	}
+	return added, nil
+}
+
 // DemoteHot moves channels that left the top list to the tracked tier.
 func (s *Store) DemoteHot(ctx context.Context, t time.Time) error {
 	_, err := s.Pool.Exec(ctx, `UPDATE channels SET tier = 'tracked' WHERE tier = 'hot' AND last_top_at < $1`, t)
