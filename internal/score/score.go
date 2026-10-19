@@ -21,7 +21,7 @@ import (
 
 // Version increments whenever detector logic or weights change, so old
 // scores can be told apart and recomputed.
-const Version = 5
+const Version = 6
 
 const (
 	liveEvery       = 15 * time.Minute
@@ -352,7 +352,10 @@ func (s *Scorer) sharedNote(ctx context.Context, perChannel map[int64]int) (stri
 // other channel live at the same time.
 func (s *Scorer) synchrony(ctx context.Context, r store.StreamRef, p detect.Prepared) (detect.Component, error) {
 	start := r.FirstSeenAt.Truncate(time.Minute)
-	idx := detect.SpikeOnsets(p, spikeThreshold)
+	var idx []int
+	if !p.Noisy() {
+		idx = detect.SpikeOnsets(p, spikeThreshold)
+	}
 	onsets := make([]store.Onset, len(idx))
 	own := make([]int64, len(idx))
 	for i, m := range idx {
@@ -374,6 +377,9 @@ func (s *Scorer) synchrony(ctx context.Context, r store.StreamRef, p detect.Prep
 			mins[j] = t.Unix() / 60
 		}
 		partners[i] = detect.Partner{Login: row.Login, OverlapMinutes: row.OverlapMinutes, Onsets: mins}
+	}
+	if p.Noisy() {
+		return detect.Component{Reason: "Twitch viewer count too erratic between updates"}, nil
 	}
 	// Helix refreshes every 3-5 minutes, so onsets can be off by a few minutes.
 	return detect.Synchrony(own, partners, 3), nil

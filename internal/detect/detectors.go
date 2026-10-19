@@ -47,12 +47,25 @@ type Prepared struct {
 	Baseline []float64 // rolling median
 	Rel      []float64 // (viewers - baseline) / baseline
 	Coverage float64   // fraction of minutes with any sample
+	// Noise is the median relative change between consecutive Helix updates.
+	// Some channels' counts jump 10% or more on every refresh, in either
+	// direction; spike detectors cannot tell spikes from that noise.
+	Noise float64
 }
+
+// MaxNoise is the update-to-update noise above which spike-based detectors
+// stand down.
+const MaxNoise = 0.05
+
+// Noisy reports whether the viewer count is too erratic for spike detection.
+func (p Prepared) Noisy() bool { return p.Noise > MaxNoise }
+
+var noisy = unavailable("Twitch viewer count too erratic between updates")
 
 const baselineWindow = 31
 
 func Prepare(d StreamData) Prepared {
-	p := Prepared{Coverage: Coverage(d.Viewers)}
+	p := Prepared{Coverage: Coverage(d.Viewers), Noise: updateNoise(d.Viewers)}
 	v := Interpolate(HeldToNaN(d.Viewers))
 	if v == nil {
 		return p
@@ -76,6 +89,9 @@ func PeriodicSpikes(p Prepared) Component {
 	n := len(p.Rel)
 	if n < 90 || p.Coverage < 0.7 {
 		return unavailable("too short")
+	}
+	if p.Noisy() {
+		return noisy
 	}
 	bestLag, bestACF := 0, 0.0
 	maxLag := min(120, n/3)
@@ -114,6 +130,9 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 	n := len(p.Viewers)
 	if n < 60 || p.Coverage < 0.7 {
 		return unavailable("too short")
+	}
+	if p.Noisy() {
+		return noisy
 	}
 	explained := func(i int, delta float64) bool {
 		for _, r := range d.Raids {
@@ -168,6 +187,9 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 func SpikeChatLift(d StreamData, p Prepared) Component {
 	if len(p.Rel) < 90 {
 		return unavailable("too short")
+	}
+	if p.Noisy() {
+		return noisy
 	}
 	ep := spikeEpisodes(d, p)
 	if len(ep) == 0 {
@@ -273,6 +295,9 @@ func SpikeFollowLift(d StreamData, p Prepared) Component {
 	if len(p.Rel) < 90 {
 		return unavailable("too short")
 	}
+	if p.Noisy() {
+		return noisy
+	}
 	ep := spikeEpisodes(d, p)
 	if len(ep) == 0 {
 		return Component{Available: true, Values: map[string]float64{"spikes": 0}}
@@ -377,6 +402,9 @@ func StartRamp(d StreamData, p Prepared) Component {
 	if !d.ObservedFromStart || len(p.Viewers) < 60 {
 		return unavailable("start not observed")
 	}
+	if p.Noisy() {
+		return noisy
+	}
 	med := Median(p.Viewers)
 	minutes := -1
 	for i, v := range p.Viewers {
@@ -460,6 +488,19 @@ var Weights = map[string]float64{
 	"start_ramp":          0.1,
 }
 
+// Families group detectors that read the same underlying evidence. A
+// detector can only be corroborated by one from another family: the chat and
+// follow lift detectors both depend on the same viewer spikes being real, so
+// they do not confirm each other.
+var Families = map[string]string{
+	"periodic_spikes": "viewer_shape", "synchronized_spikes": "viewer_shape",
+	"unexplained_jumps": "viewer_shape", "start_ramp": "viewer_shape",
+	"spike_chat_lift": "spike_response", "spike_follow_lift": "spike_response",
+	"chat_engagement": "chat", "chat_repetition": "chat",
+	"chatter_accounts": "accounts", "shared_accounts": "accounts",
+	"follow_bursts": "follows", "follower_purge": "follows",
+}
+
 // SingleCap is the most one detector can contribute (0 to 1) without support
 // from another. One detector can misfire on an unusual but innocent stream;
 // a high quotient needs at least two independent kinds of evidence.
@@ -467,12 +508,16 @@ const SingleCap = 0.3
 
 // Combine merges components with a weighted noisy-OR, giving a quotient from
 // 0 to 100. Each component contributes evidence w*strength. The strongest is
-// capped at SingleCap plus the second strongest, so one detector alone gives
-// at most 30. Confidence reflects how much of the total weight could be
+// capped at SingleCap plus the strongest evidence from another family, so one
+// line of evidence alone gives at most 30. Confidence reflects how much of the total weight could be
 // evaluated and how long the stream was observed.
 func Combine(components map[string]Component, minutes int) (quotient, confidence float64) {
+	type evidence struct {
+		family string
+		e      float64
+	}
 	var availW, totalW float64
-	var ev []float64
+	var ev []evidence
 	for name, w := range Weights {
 		totalW += w
 		c, ok := components[name]
@@ -480,19 +525,33 @@ func Combine(components map[string]Component, minutes int) (quotient, confidence
 			continue
 		}
 		availW += w
-		ev = append(ev, w*math.Max(0, math.Min(1, c.Strength)))
+		ev = append(ev, evidence{Families[name], w * math.Max(0, math.Min(1, c.Strength))})
 	}
-	slices.SortFunc(ev, func(a, b float64) int { return cmp.Compare(b, a) })
+	slices.SortFunc(ev, func(a, b evidence) int { return cmp.Compare(b.e, a.e) })
 	if len(ev) > 0 {
-		second := 0.0
-		if len(ev) > 1 {
-			second = ev[1]
+		other := 0.0
+		for _, x := range ev[1:] {
+			if x.family != ev[0].family {
+				other = x.e
+				break
+			}
 		}
-		ev[0] = math.Min(ev[0], SingleCap+second)
+		// Same-family evidence still adds, but only within the cap.
+		limit := SingleCap + other
+		sameKeep := 1.0
+		rest := ev[:0:0]
+		for _, x := range ev {
+			if x.family == ev[0].family {
+				sameKeep *= 1 - x.e
+			} else {
+				rest = append(rest, x)
+			}
+		}
+		ev = append(rest, evidence{ev[0].family, math.Min(1-sameKeep, limit)})
 	}
 	keep := 1.0
-	for _, e := range ev {
-		keep *= 1 - e
+	for _, x := range ev {
+		keep *= 1 - x.e
 	}
 	quotient = 100 * (1 - keep)
 	confidence = (availW / totalW) * math.Min(1, float64(minutes)/180)
@@ -519,4 +578,24 @@ func SharedAccounts(chatters, young int, otherChannels []int, minOther int) Comp
 	return Component{Available: true, Strength: s, Values: map[string]float64{
 		"chatters": float64(chatters), "young_or_suspended": float64(young),
 		"shared_accounts": float64(shared), "shared_share": share}}
+}
+
+// updateNoise is the median relative change between consecutive distinct
+// viewer values (Helix updates), ignoring held repeats.
+func updateNoise(v []float64) float64 {
+	var changes []float64
+	prev := math.NaN()
+	for _, x := range v {
+		if math.IsNaN(x) || x == prev {
+			continue
+		}
+		if !math.IsNaN(prev) && prev > 0 {
+			changes = append(changes, math.Abs(x-prev)/prev)
+		}
+		prev = x
+	}
+	if len(changes) < 10 {
+		return 0
+	}
+	return Median(changes)
 }

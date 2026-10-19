@@ -20,6 +20,12 @@ const COMPONENTS = {
   chat_repetition: ['Chat repetition', 'Share of chat that is one repeated message'],
   start_ramp: ['Start ramp', 'How fast viewers arrive after going live'],
 };
+const FAMILIES = {
+  periodic_spikes: 'viewer_shape', synchronized_spikes: 'viewer_shape', unexplained_jumps: 'viewer_shape', start_ramp: 'viewer_shape',
+  spike_chat_lift: 'spike_response', spike_follow_lift: 'spike_response',
+  chat_engagement: 'chat', chat_repetition: 'chat', chatter_accounts: 'accounts', shared_accounts: 'accounts',
+  follow_bursts: 'follows', follower_purge: 'follows',
+};
 const WEIGHTS = {
   periodic_spikes: 0.6, synchronized_spikes: 0.5, spike_chat_lift: 0.5, chat_engagement: 0.5, follower_purge: 0.4, chatter_accounts: 0.4, shared_accounts: 0.4,
   follow_bursts: 0.3, unexplained_jumps: 0.3, spike_follow_lift: 0.25, chat_repetition: 0.15, start_ramp: 0.1,
@@ -272,11 +278,20 @@ function renderComponents(el, score) {
     const ca = comps[a] || {}, cb = comps[b] || {};
     return (cb.available ? cb.strength * WEIGHTS[b] : -1) - (ca.available ? ca.strength * WEIGHTS[a] : -1);
   });
-  // Mirrors detect.Combine: the strongest detector counts at most 0.3 plus the second strongest.
-  const ev = keys.map((k) => (comps[k]?.available ? WEIGHTS[k] * comps[k].strength : 0)).sort((a, b) => b - a);
-  const capped = (score.version || 0) >= 5 && ev[0] > 0.3 + (ev[1] || 0) + 1e-9;
-  const capNote = capped ? `<p class="muted">Only one detector found much here, so it counts for at most ${Math.round(100 * (0.3 + (ev[1] || 0)))}
-    points instead of ${Math.round(100 * ev[0])}. A higher quotient needs a second detector to agree.</p>` : '';
+  // Mirrors detect.Combine: the strongest family of evidence counts at most 0.3 plus the
+  // strongest evidence from another family.
+  const ev = keys.filter((k) => comps[k]?.available).map((k) => ({ f: FAMILIES[k], e: WEIGHTS[k] * comps[k].strength }))
+    .sort((a, b) => b.e - a.e);
+  let capNote = '';
+  if ((score.version || 0) >= 6 && ev.length) {
+    const top = ev[0].f;
+    const other = ev.find((x) => x.f !== top)?.e || 0;
+    const same = 1 - ev.filter((x) => x.f === top).reduce((k, x) => k * (1 - x.e), 1);
+    if (same > 0.3 + other + 1e-9) {
+      capNote = `<p class="muted">Only one kind of evidence found much here, so it counts for at most ${Math.round(100 * (0.3 + other))}
+        points instead of ${Math.round(100 * same)}. A higher quotient needs a different kind of evidence to agree.</p>`;
+    }
+  }
   el.innerHTML = capNote + keys.map((k) => {
     const c = comps[k] || {};
     const [name, desc] = COMPONENTS[k];
@@ -489,8 +504,10 @@ function aboutView() {
     <p class="sub">Every channel that reaches the Twitch top 200 is tracked from then on. Each minute the collector records its
       viewer count (Twitch Helix API), its chat activity (anonymous IRC), and its follower total.</p>
     <p>When a stream ends, ${Object.keys(COMPONENTS).length} detectors each rate one kind of evidence from 0 to 1. They are combined with fixed weights
-      (a weighted noisy-OR) into a quotient from 0 to 100. One detector on its own can add at most 30 points; going higher
-      needs a second detector to agree, because any single detector can misfire on an unusual but innocent stream.
+      (a weighted noisy-OR) into a quotient from 0 to 100. One kind of evidence on its own can add at most 30 points; going
+      higher needs a different kind to agree, because any single line of evidence can misfire on an unusual but innocent stream.
+      The chat and follow checks during spikes count as one kind, since both depend on the same spikes. Spike detectors stand
+      down for channels whose Twitch count jumps erratically between updates.
       Live streams get a provisional score after an hour.</p>
     <p>Chat engagement is compared with streams of a similar size in the same language, then adjusted for the stream’s main
       category and for similar categories (social, creative, gambling, sports or games). A category with few recent streams

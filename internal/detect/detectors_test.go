@@ -263,3 +263,40 @@ func TestSharedAccounts(t *testing.T) {
 		t.Errorf("shared farm strength %.2f (%v)", farm.Strength, farm.Values)
 	}
 }
+
+func TestNoisyCountsDisableSpikeDetectors(t *testing.T) {
+	r := rand.New(rand.NewPCG(9, 1))
+	v := make([]float64, 300)
+	held := 4000.0
+	for i := range v {
+		if i%4 == 0 {
+			held = math.Round(4000 * (1 + 0.15*(r.Float64()*2-1)))
+		}
+		v[i] = held
+	}
+	d := StreamData{Viewers: v, Chatters: make([]float64, 300)}
+	p := Prepare(d)
+	if !p.Noisy() {
+		t.Fatalf("noise %.3f not flagged", p.Noise)
+	}
+	for name, c := range map[string]Component{
+		"periodic": PeriodicSpikes(p), "jumps": UnexplainedJumps(d, p), "chat lift": SpikeChatLift(d, p),
+	} {
+		if c.Available {
+			t.Errorf("%s available on a noisy count", name)
+		}
+	}
+	if q := Prepare(StreamData{Viewers: organic(300, 2)}); q.Noisy() {
+		t.Errorf("organic count flagged noisy (%.3f)", q.Noise)
+	}
+}
+
+func TestCombineSameFamilyDoesNotCorroborate(t *testing.T) {
+	q, _ := Combine(map[string]Component{
+		"spike_chat_lift":   {Available: true, Strength: 1},
+		"spike_follow_lift": {Available: true, Strength: 1},
+	}, 300)
+	if math.Abs(q-100*SingleCap) > 0.01 {
+		t.Errorf("chat and follow lift alone gave %.1f, want %.0f", q, 100*SingleCap)
+	}
+}
