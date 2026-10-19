@@ -57,6 +57,7 @@ func (s *Store) streamRefs(ctx context.Context, sql string, args ...any) ([]Stre
 type ViewerPoint struct {
 	TS      time.Time
 	Viewers int
+	GameID  string
 }
 
 type ChatPoint struct {
@@ -89,14 +90,14 @@ type StreamSeries struct {
 func (s *Store) LoadSeries(ctx context.Context, r StreamRef) (StreamSeries, error) {
 	var out StreamSeries
 	from, to := r.FirstSeenAt, r.LastSeenAt
-	rows, err := s.Pool.Query(ctx, `SELECT ts, viewers FROM viewer_samples
+	rows, err := s.Pool.Query(ctx, `SELECT ts, viewers, coalesce(game_id, '') FROM viewer_samples
 		WHERE channel_id = $1 AND stream_id = $2 AND ts BETWEEN $3 AND $4 ORDER BY ts`, r.ChannelID, r.ID, from, to)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		var p ViewerPoint
-		if err := rows.Scan(&p.TS, &p.Viewers); err != nil {
+		if err := rows.Scan(&p.TS, &p.Viewers, &p.GameID); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -180,6 +181,8 @@ func (s *Store) ChatterAccounts(ctx context.Context, streamID int64, startedAt t
 
 type PeerStat struct {
 	Language      string
+	GameID        string // category with the most viewer minutes
+	GameName      string
 	MedianViewers float64
 	ChattersPerK  float64
 }
@@ -188,15 +191,23 @@ type PeerStat struct {
 // 1000 viewers over the recent window, for the engagement baseline.
 func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat, error) {
 	rows, err := s.Pool.Query(ctx, `
-		SELECT coalesce(s.language, ''),
-		       percentile_cont(0.5) WITHIN GROUP (ORDER BY v.viewers),
-		       percentile_cont(0.5) WITHIN GROUP (ORDER BY c.unique_chatters::float8 * 1000 / v.viewers)
-		FROM viewer_samples v
-		JOIN chat_minutes c ON c.channel_id = v.channel_id AND c.ts = v.ts
-		JOIN streams s ON s.id = v.stream_id
-		WHERE v.ts > $1 AND v.viewers >= 100
-		GROUP BY v.stream_id, s.language
-		HAVING count(*) >= 30`, since)
+		WITH per AS (
+			SELECT coalesce(s.language, '') AS lang,
+			       coalesce(mode() WITHIN GROUP (ORDER BY v.game_id), '') AS game_id,
+			       percentile_cont(0.5) WITHIN GROUP (ORDER BY v.viewers) AS viewers,
+			       percentile_cont(0.5) WITHIN GROUP (ORDER BY c.unique_chatters::float8 * 1000 / v.viewers) AS per_k
+			FROM viewer_samples v
+			JOIN chat_minutes c ON c.channel_id = v.channel_id AND c.ts = v.ts
+			JOIN streams s ON s.id = v.stream_id
+			WHERE v.ts > $1 AND v.viewers >= 100
+			GROUP BY v.stream_id, s.language
+			HAVING count(*) >= 30
+		)
+		SELECT per.lang, per.game_id, coalesce(g.game_name, ''), per.viewers, per.per_k
+		FROM per LEFT JOIN (
+			SELECT DISTINCT ON (game_id) game_id, game_name FROM streams
+			WHERE game_id IS NOT NULL AND game_name IS NOT NULL
+			ORDER BY game_id, last_seen_at DESC) g ON g.game_id = per.game_id`, since)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +215,7 @@ func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat,
 	var out []PeerStat
 	for rows.Next() {
 		var p PeerStat
-		if err := rows.Scan(&p.Language, &p.MedianViewers, &p.ChattersPerK); err != nil {
+		if err := rows.Scan(&p.Language, &p.GameID, &p.GameName, &p.MedianViewers, &p.ChattersPerK); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -272,7 +283,9 @@ func (s *Store) UpdateChannelQuotient(ctx context.Context, channelID int64) erro
 			FROM recent
 		)
 		UPDATE channels SET
-			quotient = CASE WHEN agg.den > 0 THEN agg.num / agg.den END,
+			-- The prior acts like half a full-confidence stream scoring 0, so a
+			-- channel seen once at low confidence cannot top the leaderboard.
+			quotient = CASE WHEN agg.den > 0 THEN agg.num / (agg.den + 0.5) END,
 			quotient_confidence = LEAST(1, coalesce(agg.conf, 0) / 3),
 			quotient_updated_at = now()
 		FROM agg WHERE channels.id = $1`, channelID)

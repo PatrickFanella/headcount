@@ -208,3 +208,58 @@ func TestUnexplainedJumpsIgnoresFlipFlop(t *testing.T) {
 		t.Errorf("flip-flop counted as jumps: %v", c.Values)
 	}
 }
+
+func TestCombineNeedsCorroboration(t *testing.T) {
+	alone, _ := Combine(map[string]Component{
+		"spike_chat_lift": {Available: true, Strength: 1},
+		"periodic_spikes": {Available: true, Strength: 0},
+	}, 300)
+	if math.Abs(alone-100*SingleCap) > 0.01 {
+		t.Errorf("single detector quotient %.1f, want %.0f", alone, 100*SingleCap)
+	}
+	weak, _ := Combine(map[string]Component{
+		"spike_chat_lift": {Available: true, Strength: 1},
+		"periodic_spikes": {Available: true, Strength: 0.1},
+	}, 300)
+	if weak <= alone || weak > 45 {
+		t.Errorf("weakly supported quotient %.1f", weak)
+	}
+}
+
+// Chat that thins over the stream, with a couple of small unrelated bumps,
+// must not read as chat ignoring spikes.
+func TestSpikeChatLiftNeedsRepeatedMaterialSpikes(t *testing.T) {
+	n := 360
+	v := make([]float64, n)
+	chat := make([]float64, n)
+	for i := range v {
+		v[i] = 1000 - float64(i)
+		chat[i] = 15 - float64(i)/40
+		if (i >= 100 && i < 106) || (i >= 220 && i < 226) {
+			v[i] *= 1.12
+			chat[i] *= 0.7
+		}
+	}
+	d := StreamData{Viewers: v, Chatters: chat}
+	if c := SpikeChatLift(d, Prepare(d)); c.Strength > 0.3 {
+		t.Errorf("two small spikes gave strength %.2f (%v)", c.Strength, c.Values)
+	}
+}
+
+func TestSharedAccounts(t *testing.T) {
+	if c := SharedAccounts(20, 5, []int{5, 5}, 2); c.Available {
+		t.Error("available with few chatters")
+	}
+	organic := SharedAccounts(2000, 80, []int{1, 1, 2, 1, 0, 3}, 2)
+	if organic.Strength > 0.05 {
+		t.Errorf("organic strength %.2f (%v)", organic.Strength, organic.Values)
+	}
+	others := make([]int, 60)
+	for i := range others {
+		others[i] = 4
+	}
+	farm := SharedAccounts(1000, 200, others, 2)
+	if farm.Strength < 0.9 {
+		t.Errorf("shared farm strength %.2f (%v)", farm.Strength, farm.Values)
+	}
+}

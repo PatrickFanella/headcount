@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	twitch "github.com/gempir/go-twitch-irc/v4"
@@ -45,6 +46,17 @@ type streamSeen struct {
 type conn struct {
 	client   *twitch.Client
 	channels map[string]bool
+
+	connectedAt atomic.Int64 // unix nanos of the current connection; 0 while down
+}
+
+// joinedRoom records when Twitch confirmed a join with ROOMSTATE on a
+// connection. Rooms confirmed for a whole minute on a connection that stayed
+// up get a zero row when nobody chatted, so silence is not mistaken for a gap.
+type joinedRoom struct {
+	room int64
+	cn   *conn
+	at   time.Time
 }
 
 type Collector struct {
@@ -59,6 +71,7 @@ type Collector struct {
 	roomState map[int64]map[string]int
 	events    []store.Event
 	pending   map[int64]struct{}
+	confirmed map[string]joinedRoom // by login
 
 	joinMu sync.Mutex
 	conns  []*conn
@@ -78,6 +91,7 @@ func New(ls *live.State, s *store.Store, h *helix.Client, log *slog.Logger) *Col
 		seen:      map[int64]*streamSeen{},
 		roomState: map[int64]map[string]int{},
 		pending:   map[int64]struct{}{},
+		confirmed: map[string]joinedRoom{},
 		joined:    map[string]*conn{},
 	}
 }
@@ -105,13 +119,15 @@ func (c *Collector) newConn() *conn {
 	client.OnPrivateMessage(c.onPrivmsg)
 	client.OnUserNoticeMessage(c.onUserNotice)
 	client.OnClearChatMessage(c.onClearChat)
-	client.OnRoomStateMessage(c.onRoomState)
 	cn := &conn{client: client, channels: map[string]bool{}}
+	client.OnRoomStateMessage(func(m twitch.RoomStateMessage) { c.onRoomState(cn, m) })
+	client.OnConnect(func() { cn.connectedAt.Store(time.Now().UnixNano()) })
 	go func() {
 		backoff := time.Second
 		for {
 			start := time.Now()
 			err := client.Connect()
+			cn.connectedAt.Store(0)
 			if err == twitch.ErrClientDisconnected {
 				return
 			}
@@ -157,6 +173,9 @@ func (c *Collector) sync() {
 			cn.client.Depart(login)
 			delete(cn.channels, login)
 			delete(c.joined, login)
+			c.mu.Lock()
+			delete(c.confirmed, login)
+			c.mu.Unlock()
 			parts++
 		}
 	}
@@ -322,13 +341,21 @@ func (c *Collector) onClearChat(msg twitch.ClearChatMessage) {
 	}
 }
 
-func (c *Collector) onRoomState(msg twitch.RoomStateMessage) {
+func (c *Collector) onRoomState(cn *conn, msg twitch.RoomStateMessage) {
 	room, err := strconv.ParseInt(msg.RoomID, 10, 64)
-	if err != nil || len(msg.State) == 0 {
+	if err != nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	login := strings.ToLower(msg.Channel)
+	since := time.Unix(0, cn.connectedAt.Load())
+	if j, ok := c.confirmed[login]; !ok || j.cn != cn || j.at.Before(since) {
+		c.confirmed[login] = joinedRoom{room: room, cn: cn, at: time.Now()}
+	}
+	if len(msg.State) == 0 {
+		return
+	}
 	prev := c.roomState[room]
 	next := maps.Clone(prev)
 	if next == nil {
@@ -364,6 +391,15 @@ func (c *Collector) flush(ctx context.Context, minute time.Time) {
 	events := c.events
 	c.aggs = map[int64]*minuteAgg{}
 	c.events = nil
+	for _, j := range c.confirmed {
+		up := j.cn.connectedAt.Load()
+		if up == 0 || time.Unix(0, up).After(minute) || j.at.After(minute) {
+			continue
+		}
+		if _, ok := aggs[j.room]; !ok && c.live.StreamID(j.room) != 0 {
+			aggs[j.room] = newMinuteAgg()
+		}
+	}
 	c.mu.Unlock()
 
 	var (

@@ -4,9 +4,15 @@
 package score
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
+	"maps"
 	"math"
+	"slices"
+	"strings"
 	"time"
 
 	"git.subcult.tv/subculture-collective/sus-quotient/internal/detect"
@@ -15,10 +21,13 @@ import (
 
 // Version increments whenever detector logic or weights change, so old
 // scores can be told apart and recomputed.
-const Version = 4
+const Version = 5
 
 const (
 	liveEvery       = 15 * time.Minute
+	youngAccountAge = 90 * 24 * time.Hour
+	sharedWindow    = 7 * 24 * time.Hour
+	sharedMinOther  = 2 // other channels an account must chat in
 	liveMinMinutes  = 60
 	newAccountAge   = 30 * 24 * time.Hour
 	lowQuotient     = 15
@@ -240,17 +249,20 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 	comps["synchronized_spikes"] = sync
 
 	if stats, ok := detect.ChatEngagement(d, p); ok && s.baseline.ok() {
-		b, perLang := s.baseline.For(r.Language)
-		z := b.z(stats.MedianViewers, stats.ChattersPerK)
+		e := s.baseline.Expect(r.Language, mainGame(ser.Viewers), "")
+		z := e.Z(stats.MedianViewers, stats.ChattersPerK)
 		langFlag := 0.0
-		if perLang {
+		if e.PerLanguage {
 			langFlag = 1
 		}
-		comps["chat_engagement"] = detect.ChatResidualComponent(z, d.RestrictedChat, map[string]float64{
+		c := detect.ChatResidualComponent(z, d.RestrictedChat, map[string]float64{
 			"median_viewers": stats.MedianViewers, "chatters_per_k": stats.ChattersPerK,
-			"expected_per_k": b.expected(stats.MedianViewers), "chat_coverage": stats.ChatCoverage,
-			"language_baseline": langFlag,
+			"expected_per_k": e.Expected(stats.MedianViewers), "chat_coverage": stats.ChatCoverage,
+			"language_baseline": langFlag, "category_peers": float64(e.CategoryPeers),
+			"category_offset": round(e.CategoryOffset), "family_offset": round(e.FamilyOffset),
 		})
+		c.Reason = engagementNote(e)
+		comps["chat_engagement"] = c
 	} else {
 		comps["chat_engagement"] = detect.Component{Reason: "no chat data or baseline not ready"}
 	}
@@ -260,6 +272,11 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 		return err
 	}
 	comps["chatter_accounts"] = detect.AccountAgeComponent(total, newAcc, missing)
+	shared, err := s.sharedAccounts(ctx, r, total)
+	if err != nil {
+		return err
+	}
+	comps["shared_accounts"] = shared
 
 	minutes := len(d.Viewers)
 	q, conf := detect.Combine(comps, minutes)
@@ -267,6 +284,68 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 		StreamID: r.ID, ChannelID: r.ChannelID, LastSeenAt: r.LastSeenAt, Version: Version, Minutes: minutes,
 		Quotient: q, Confidence: conf, Final: r.Ended, Components: comps,
 	})
+}
+
+// sharedAccounts finds young or suspended chatters who also chatted in other
+// tracked channels during the week before and during the stream. Once a
+// stream's chatter rows are pruned, the previously stored result is reused.
+func (s *Scorer) sharedAccounts(ctx context.Context, r store.StreamRef, chatters int) (detect.Component, error) {
+	pruned, err := s.store.ChattersPruned(ctx, r.ID)
+	if err != nil {
+		return detect.Component{}, err
+	}
+	if pruned {
+		raw, err := s.store.PreviousComponent(ctx, r.ID, "shared_accounts")
+		var c detect.Component
+		if err != nil || raw == nil || json.Unmarshal(raw, &c) != nil {
+			return detect.Component{Reason: "chatter list pruned"}, nil
+		}
+		return c, nil
+	}
+	young, accounts, err := s.store.SharedYoungChatters(ctx, r.ID, r.ChannelID,
+		r.StartedAt.Add(-youngAccountAge), r.StartedAt.Add(-sharedWindow), r.LastSeenAt)
+	if err != nil {
+		return detect.Component{}, err
+	}
+	others := make([]int, len(accounts))
+	perChannel := map[int64]int{}
+	for i, a := range accounts {
+		others[i] = len(a.Channels)
+		if len(a.Channels) >= sharedMinOther {
+			for _, ch := range a.Channels {
+				perChannel[ch]++
+			}
+		}
+	}
+	c := detect.SharedAccounts(chatters, young, others, sharedMinOther)
+	if c.Available && len(perChannel) > 0 {
+		c.Reason, err = s.sharedNote(ctx, perChannel)
+		if err != nil {
+			return detect.Component{}, err
+		}
+	}
+	return c, nil
+}
+
+// sharedNote names the channels sharing the most flagged accounts.
+func (s *Scorer) sharedNote(ctx context.Context, perChannel map[int64]int) (string, error) {
+	ids := slices.Collect(maps.Keys(perChannel))
+	slices.SortFunc(ids, func(a, b int64) int {
+		if d := perChannel[b] - perChannel[a]; d != 0 {
+			return d
+		}
+		return cmp.Compare(a, b)
+	})
+	ids = ids[:min(5, len(ids))]
+	logins, err := s.store.ChannelLogins(ctx, ids)
+	if err != nil {
+		return "", err
+	}
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprintf("%s (%d)", logins[id], perChannel[id])
+	}
+	return "Most shared with " + strings.Join(parts, ", ") + ".", nil
 }
 
 // synchrony stores this stream's spike onsets and compares them with every
@@ -301,3 +380,32 @@ func (s *Scorer) synchrony(ctx context.Context, r store.StreamRef, p detect.Prep
 }
 
 func round(x float64) float64 { return math.Round(x*1000) / 1000 }
+
+// mainGame returns the category with the most viewer samples.
+func mainGame(points []store.ViewerPoint) string {
+	counts := map[string]int{}
+	best, bestN := "", 0
+	for _, p := range points {
+		if p.GameID == "" {
+			continue
+		}
+		counts[p.GameID]++
+		if n := counts[p.GameID]; n > bestN || (n == bestN && p.GameID < best) {
+			best, bestN = p.GameID, n
+		}
+	}
+	return best
+}
+
+// engagementNote says which peer group a stream's chat was compared with.
+func engagementNote(e Expectation) string {
+	lang := "all languages"
+	if e.PerLanguage {
+		lang = "the same language"
+	}
+	if e.Category == "" {
+		return fmt.Sprintf("Compared with streams in %s; category unknown.", lang)
+	}
+	return fmt.Sprintf("Compared with streams in %s, adjusted for %s (%d recent streams) and similar %s categories (%d).",
+		lang, e.Category, e.CategoryPeers, e.Family, e.FamilyPeers)
+}

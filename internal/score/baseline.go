@@ -23,8 +23,9 @@ const (
 // baselines holds a global fit and per-language fits. Chat culture differs by
 // language, so a language with enough peer streams gets its own baseline.
 type baselines struct {
-	global *baseline
-	byLang map[string]*baseline
+	global  *baseline
+	byLang  map[string]*baseline
+	offsets *offsets
 }
 
 func fitBaselines(peers []store.PeerStat) *baselines {
@@ -42,6 +43,9 @@ func fitBaselines(peers []store.PeerStat) *baselines {
 		if fit := fitBaselineMin(g, minLangPeers); fit.ok {
 			b.byLang[lang] = fit
 		}
+	}
+	if b.global.ok {
+		b.fitOffsets(peers)
 	}
 	return b
 }

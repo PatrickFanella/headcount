@@ -1,7 +1,9 @@
 package detect
 
 import (
+	"cmp"
 	"math"
+	"slices"
 )
 
 // StreamData is one stream aligned to minute indices from its first sample.
@@ -153,82 +155,135 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 		"jumps": float64(jumps), "unexplained": float64(unexplained), "per_hour": rate}}
 }
 
-// spikeMinutes returns indices where viewers are well above baseline, and
-// the remaining "baseline" indices.
-func spikeMinutes(p Prepared) (spike, base []int, meanRel float64) {
-	threshold := math.Max(0.05, Quantile(p.Rel, 0.9))
-	sum := 0.0
-	for i, r := range p.Rel {
-		switch {
-		case r >= threshold:
-			spike = append(spike, i)
-			sum += r
-		case math.Abs(r) < 0.02:
-			base = append(base, i)
-		}
-	}
-	if len(spike) > 0 {
-		meanRel = sum / float64(len(spike))
-	}
-	return
-}
-
-// liftRatio compares an activity series during viewer spikes with baseline
-// minutes, normalized by the size of the spike. Real viewers bring
-// proportional activity (ratio near 1); bot viewers bring none (near 0).
-func liftRatio(activity []float64, spike, base []int, meanRel float64) (ratio float64, ok bool) {
-	pick := func(idx []int) []float64 {
-		out := make([]float64, 0, len(idx))
-		for _, i := range idx {
-			if i < len(activity) && !math.IsNaN(activity[i]) {
-				out = append(out, activity[i])
-			}
-		}
-		return out
-	}
-	s, b := pick(spike), pick(base)
-	if len(s) < 8 || len(b) < 20 {
-		return 0, false
-	}
-	bm := Mean(b)
-	if bm <= 0 {
-		return 0, false
-	}
-	return (Mean(s)/bm - 1) / meanRel, true
-}
-
-// SpikeChatLift asks whether chat grows when viewers spike.
+// SpikeChatLift asks whether chat grows when viewers spike. Each spike is
+// compared with the minutes just before it, so slow drifts over a stream
+// (chat thinning as it goes on) do not count. Real arrivals bring chat
+// roughly in proportion (ratio near 1); bot viewers bring none (near 0).
+//
+// Helix counts lag real viewers by a few minutes while chat is immediate, so
+// the spike window starts a few minutes before the detected onset. Spikes
+// near a raid or category change, or in the first minutes, are skipped. The
+// strength needs several material spikes: one or two, or spikes barely above
+// the noise, are not evidence.
 func SpikeChatLift(d StreamData, p Prepared) Component {
 	if len(p.Rel) < 90 {
 		return unavailable("too short")
 	}
-	spike, base, meanRel := spikeMinutes(p)
-	if meanRel < 0.08 {
-		return Component{Available: true, Values: map[string]float64{"mean_spike_rel": meanRel}}
+	ep := spikeEpisodes(d, p)
+	if len(ep) == 0 {
+		return Component{Available: true, Values: map[string]float64{"spikes": 0}}
 	}
-	ratio, ok := liftRatio(d.Chatters, spike, base, meanRel)
+	ratio, n, lift, ok := episodeLift(d.Chatters, ep, 1)
 	if !ok {
-		return unavailable("no chat")
+		return unavailable("no chat around spikes")
 	}
-	return Component{Available: true, Strength: ramp(ratio, 0.5, 0.05), Values: map[string]float64{
-		"lift_ratio": ratio, "mean_spike_rel": meanRel, "spike_minutes": float64(len(spike))}}
+	strength := ramp(ratio, 0.5, 0.05) * ramp(n, 2, 5) * ramp(lift, 0.06, 0.15)
+	return Component{Available: true, Strength: strength, Values: map[string]float64{
+		"lift_ratio": ratio, "spikes": n, "median_spike_rel": lift}}
 }
 
-// SpikeFollowLift asks whether follows accelerate when viewers spike.
+// episodeLift is the median, over spikes, of the activity's relative change
+// divided by the viewers' relative change. minBase skips spikes whose
+// activity before was too low to measure a change.
+func episodeLift(activity []float64, ep []episode, minBase float64) (ratio, n, lift float64, ok bool) {
+	var ratios, lifts []float64
+	for _, e := range ep {
+		b, okB := meanCovered(activity, e.before)
+		x, okS := meanCovered(activity, e.during)
+		if !okB || !okS || b < minBase {
+			continue
+		}
+		ratios = append(ratios, (x/b-1)/e.lift)
+		lifts = append(lifts, e.lift)
+	}
+	if len(ratios) == 0 {
+		return 0, 0, 0, false
+	}
+	return Median(ratios), float64(len(ratios)), Median(lifts), true
+}
+
+type episode struct {
+	before, during [2]int // half-open minute ranges
+	lift           float64
+}
+
+// spikeEpisodes finds viewer spikes that are not explained by a raid or a
+// category change, with a window before and during each.
+func spikeEpisodes(d StreamData, p Prepared) []episode {
+	const threshold = 0.08
+	explained := func(i int) bool {
+		for _, r := range d.Raids {
+			if r.Minute >= i-6 && r.Minute <= i+2 {
+				return true
+			}
+		}
+		for _, c := range d.Changes {
+			if c >= i-5 && c <= i+3 {
+				return true
+			}
+		}
+		return false
+	}
+	var out []episode
+	for _, i := range SpikeOnsets(p, threshold) {
+		if i < 20 || explained(i) {
+			continue
+		}
+		end := i
+		for end < len(p.Rel) && end < i+15 && p.Rel[end] >= threshold/2 {
+			end++
+		}
+		if end-i < 2 {
+			continue
+		}
+		before := [2]int{i - 15, i - 5}
+		vb := Mean(p.Viewers[before[0]:before[1]])
+		vs := Mean(p.Viewers[i:end])
+		if vb <= 0 {
+			continue
+		}
+		lift := vs/vb - 1
+		if lift < 0.05 {
+			continue
+		}
+		out = append(out, episode{before: before, during: [2]int{i - 4, end}, lift: lift})
+	}
+	return out
+}
+
+// meanCovered averages a series over a range when at least 60% of it is present.
+func meanCovered(v []float64, r [2]int) (float64, bool) {
+	var sum float64
+	n := 0
+	for i := max(0, r[0]); i < r[1] && i < len(v); i++ {
+		if !math.IsNaN(v[i]) {
+			sum += v[i]
+			n++
+		}
+	}
+	if n == 0 || float64(n) < 0.6*float64(r[1]-r[0]) {
+		return 0, false
+	}
+	return sum / float64(n), true
+}
+
+// SpikeFollowLift asks whether follows accelerate when viewers spike, using
+// the same per-spike comparison as SpikeChatLift.
 func SpikeFollowLift(d StreamData, p Prepared) Component {
 	if len(p.Rel) < 90 {
 		return unavailable("too short")
 	}
-	spike, base, meanRel := spikeMinutes(p)
-	if meanRel < 0.08 {
-		return Component{Available: true, Values: map[string]float64{"mean_spike_rel": meanRel}}
+	ep := spikeEpisodes(d, p)
+	if len(ep) == 0 {
+		return Component{Available: true, Values: map[string]float64{"spikes": 0}}
 	}
-	ratio, ok := liftRatio(FollowDeltas(d.Followers), spike, base, meanRel)
+	ratio, n, lift, ok := episodeLift(FollowDeltas(d.Followers), ep, 0.2)
 	if !ok {
-		return unavailable("no follower data")
+		return unavailable("no follower data around spikes")
 	}
-	return Component{Available: true, Strength: ramp(ratio, 0.4, 0.0), Values: map[string]float64{
-		"lift_ratio": ratio, "mean_spike_rel": meanRel}}
+	strength := ramp(ratio, 0.4, 0.0) * ramp(n, 2, 5) * ramp(lift, 0.06, 0.15)
+	return Component{Available: true, Strength: strength, Values: map[string]float64{
+		"lift_ratio": ratio, "spikes": n, "median_spike_rel": lift}}
 }
 
 // FollowDeltas converts follower totals into per-minute gains, spreading a
@@ -397,6 +452,7 @@ var Weights = map[string]float64{
 	"chat_engagement":     0.5,
 	"follower_purge":      0.4,
 	"chatter_accounts":    0.4,
+	"shared_accounts":     0.4,
 	"follow_bursts":       0.3,
 	"unexplained_jumps":   0.3,
 	"spike_follow_lift":   0.25,
@@ -404,12 +460,19 @@ var Weights = map[string]float64{
 	"start_ramp":          0.1,
 }
 
+// SingleCap is the most one detector can contribute (0 to 1) without support
+// from another. One detector can misfire on an unusual but innocent stream;
+// a high quotient needs at least two independent kinds of evidence.
+const SingleCap = 0.3
+
 // Combine merges components with a weighted noisy-OR, giving a quotient from
-// 0 to 100. Confidence reflects how much of the total weight could be
+// 0 to 100. Each component contributes evidence w*strength. The strongest is
+// capped at SingleCap plus the second strongest, so one detector alone gives
+// at most 30. Confidence reflects how much of the total weight could be
 // evaluated and how long the stream was observed.
 func Combine(components map[string]Component, minutes int) (quotient, confidence float64) {
-	keep := 1.0
 	var availW, totalW float64
+	var ev []float64
 	for name, w := range Weights {
 		totalW += w
 		c, ok := components[name]
@@ -417,9 +480,43 @@ func Combine(components map[string]Component, minutes int) (quotient, confidence
 			continue
 		}
 		availW += w
-		keep *= 1 - w*c.Strength
+		ev = append(ev, w*math.Max(0, math.Min(1, c.Strength)))
+	}
+	slices.SortFunc(ev, func(a, b float64) int { return cmp.Compare(b, a) })
+	if len(ev) > 0 {
+		second := 0.0
+		if len(ev) > 1 {
+			second = ev[1]
+		}
+		ev[0] = math.Min(ev[0], SingleCap+second)
+	}
+	keep := 1.0
+	for _, e := range ev {
+		keep *= 1 - e
 	}
 	quotient = 100 * (1 - keep)
 	confidence = (availW / totalW) * math.Min(1, float64(minutes)/180)
 	return
+}
+
+// SharedAccounts scores the share of a stream's chatters that are young or
+// suspended accounts also chatting in several other tracked channels. Chat-bot
+// and follow-bot services reuse the same fresh accounts across customers;
+// ordinary new viewers rarely chat in many unrelated top channels in a week.
+// minOther is how many other channels an account must appear in.
+func SharedAccounts(chatters, young int, otherChannels []int, minOther int) Component {
+	if chatters < 50 {
+		return unavailable("few chatters")
+	}
+	shared := 0
+	for _, n := range otherChannels {
+		if n >= minOther {
+			shared++
+		}
+	}
+	share := float64(shared) / float64(chatters)
+	s := ramp(share, 0.005, 0.04) * ramp(float64(shared), 2, 8)
+	return Component{Available: true, Strength: s, Values: map[string]float64{
+		"chatters": float64(chatters), "young_or_suspended": float64(young),
+		"shared_accounts": float64(shared), "shared_share": share}}
 }

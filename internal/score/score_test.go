@@ -82,3 +82,40 @@ func TestLanguageBaselines(t *testing.T) {
 		t.Error("de has no peers but got its own baseline")
 	}
 }
+
+func TestCategoryOffsets(t *testing.T) {
+	var peers []store.PeerStat
+	for i := range 80 {
+		v := 1000.0 * float64(i%40+1)
+		game, name, scale := "509658", "Just Chatting", 1.6
+		if i%2 == 1 {
+			game, name, scale = "21779", "League of Legends", 0.6
+		}
+		perK := 50 * math.Pow(v, -0.3) * scale * (1 + 0.05*float64(i%3-1))
+		peers = append(peers, store.PeerStat{GameID: game, GameName: name, MedianViewers: v, ChattersPerK: perK})
+	}
+	b := fitBaselines(peers)
+	typicalLoL := 50 * math.Pow(20000, -0.3) * 0.6
+	global := b.Expect("", "", "")
+	lol := b.Expect("", "21779", "")
+	if lol.Category != "League of Legends" || lol.Family != "games" || lol.CategoryPeers != 40 {
+		t.Fatalf("expectation %+v", lol)
+	}
+	if zg, zc := global.Z(20000, typicalLoL), lol.Z(20000, typicalLoL); math.Abs(zc) >= math.Abs(zg) {
+		t.Errorf("category baseline z %.2f not closer to 0 than global %.2f", zc, zg)
+	}
+	jc := b.Expect("", "509658", "")
+	if jc.Family != "social" || jc.FamilyOffset <= 0 {
+		t.Errorf("Just Chatting expectation %+v", jc)
+	}
+	// A category made entirely of very quiet streams cannot shift by more than the cap.
+	for i := range 30 {
+		v := 1000.0 * float64(i+1)
+		peers = append(peers, store.PeerStat{GameID: "1", GameName: "Botted Game", MedianViewers: v,
+			ChattersPerK: 50 * math.Pow(v, -0.3) * 0.01})
+	}
+	b = fitBaselines(peers)
+	if e := b.Expect("", "1", ""); e.CategoryOffset+e.FamilyOffset < -maxOffsetSD*e.line.sd-1e-9 {
+		t.Errorf("offset %.2f exceeds cap", e.CategoryOffset+e.FamilyOffset)
+	}
+}

@@ -9,10 +9,11 @@ const app = document.getElementById('app');
 const COMPONENTS = {
   periodic_spikes: ['Periodic spikes', 'Viewer spikes that repeat at a fixed interval and return to the same baseline'],
   synchronized_spikes: ['Synchronized spikes', 'Viewer spikes that start in the same minutes as another channel’s, beyond chance'],
-  spike_chat_lift: ['Chat during spikes', 'Whether chat grows when viewers spike; bot viewers do not chat'],
-  chat_engagement: ['Chat engagement', 'Chatters per 1,000 viewers compared with streams of the same size'],
+  spike_chat_lift: ['Chat during spikes', 'Whether chat grows when viewers spike, compared with the minutes just before each spike; bot viewers do not chat'],
+  chat_engagement: ['Chat engagement', 'Chatters per 1,000 viewers compared with streams of the same size, language and category'],
   follower_purge: ['Follower purges', 'Large follower drops, as when Twitch removes fake follows'],
   chatter_accounts: ['Chatter accounts', 'Share of chatters with accounts under 30 days old, or suspended/deleted'],
+  shared_accounts: ['Shared accounts', 'Chatters with accounts under 90 days old, or suspended, who also chatted in two or more other tracked channels that week'],
   follow_bursts: ['Follow bursts', 'Minutes with far more follows than the stream’s normal rate'],
   unexplained_jumps: ['Unexplained jumps', 'Sharp viewer changes not explained by a raid or game change'],
   spike_follow_lift: ['Follows during spikes', 'Whether follows speed up when viewers spike'],
@@ -20,7 +21,7 @@ const COMPONENTS = {
   start_ramp: ['Start ramp', 'How fast viewers arrive after going live'],
 };
 const WEIGHTS = {
-  periodic_spikes: 0.6, synchronized_spikes: 0.5, spike_chat_lift: 0.5, chat_engagement: 0.5, follower_purge: 0.4, chatter_accounts: 0.4,
+  periodic_spikes: 0.6, synchronized_spikes: 0.5, spike_chat_lift: 0.5, chat_engagement: 0.5, follower_purge: 0.4, chatter_accounts: 0.4, shared_accounts: 0.4,
   follow_bursts: 0.3, unexplained_jumps: 0.3, spike_follow_lift: 0.25, chat_repetition: 0.15, start_ramp: 0.1,
 };
 
@@ -140,6 +141,8 @@ async function engagementView() {
   const data = await api(`/engagement?days=${days}`);
   const langs = [...new Set(data.points.map((p) => p.language).filter(Boolean))]
     .map((l) => [l, data.points.filter((p) => p.language === l).length]).sort((a, b) => b[1] - a[1]);
+  const cats = [...new Set(data.points.map((p) => p.game_name).filter(Boolean))]
+    .map((c) => [c, data.points.filter((p) => p.game_name === c).length]).sort((a, b) => b[1] - a[1]).slice(0, 40);
   const names = new Intl.DisplayNames([], { type: 'language' });
   const langName = (l) => { try { return names.of(l); } catch { return l; } };
   app.innerHTML = `
@@ -155,17 +158,23 @@ async function engagementView() {
       <label>Language <select id="em-lang"><option value="">All languages (${data.points.length})</option>
         ${langs.map(([l, c]) => `<option value="${esc(l)}">${esc(langName(l))} (${c})</option>`).join('')}
       </select></label>
+      <label>Category <select id="em-cat"><option value="">All categories</option>
+        ${cats.map(([c, k]) => `<option value="${esc(c)}">${esc(c)} (${k})</option>`).join('')}
+      </select></label>
       ${data.truncated ? `<span class="muted small">showing the latest ${n(data.limit)} streams</span>` : ''}
     </div>
     <div class="card" id="em"></div>
     <p class="caption">The line is refitted here from the streams shown, the same way the scorer fits its baseline (log-log, outliers
-      removed); the scorer uses a per-language line when a language has enough streams. Hover a point for the scorer’s own expected
+      removed). Pick a category to compare streams only with others in it; it gets its own line when it has enough streams. The
+      scorer itself uses the language line adjusted for the stream’s category and similar categories. Hover a point for the scorer’s own expected
       value and its distance from it in standard deviations (SD); click to open the stream.</p>`;
   const box = document.getElementById('em');
   const langSel = document.getElementById('em-lang');
-  const draw = () => renderEngagementMap(box, data, langSel.value);
+  const catSel = document.getElementById('em-cat');
+  const draw = () => renderEngagementMap(box, data, langSel.value, catSel.value);
   draw();
   langSel.addEventListener('change', draw);
+  catSel.addEventListener('change', draw);
   document.getElementById('em-days').addEventListener('change', (e) => { location.hash = `#/engagement?days=${e.target.value}`; });
 }
 
@@ -263,7 +272,12 @@ function renderComponents(el, score) {
     const ca = comps[a] || {}, cb = comps[b] || {};
     return (cb.available ? cb.strength * WEIGHTS[b] : -1) - (ca.available ? ca.strength * WEIGHTS[a] : -1);
   });
-  el.innerHTML = keys.map((k) => {
+  // Mirrors detect.Combine: the strongest detector counts at most 0.3 plus the second strongest.
+  const ev = keys.map((k) => (comps[k]?.available ? WEIGHTS[k] * comps[k].strength : 0)).sort((a, b) => b - a);
+  const capped = (score.version || 0) >= 5 && ev[0] > 0.3 + (ev[1] || 0) + 1e-9;
+  const capNote = capped ? `<p class="muted">Only one detector found much here, so it counts for at most ${Math.round(100 * (0.3 + (ev[1] || 0)))}
+    points instead of ${Math.round(100 * ev[0])}. A higher quotient needs a second detector to agree.</p>` : '';
+  el.innerHTML = capNote + keys.map((k) => {
     const c = comps[k] || {};
     const [name, desc] = COMPONENTS[k];
     const details = c.values ? Object.entries(c.values).map(([key, v]) => `${key.replaceAll('_', ' ')} ${Math.abs(v) < 10 ? v.toFixed(2) : n(v)}`).join(' · ') : '';
@@ -474,11 +488,18 @@ function aboutView() {
     <h1>How scoring works</h1>
     <p class="sub">Every channel that reaches the Twitch top 200 is tracked from then on. Each minute the collector records its
       viewer count (Twitch Helix API), its chat activity (anonymous IRC), and its follower total.</p>
-    <p>When a stream ends, eleven detectors each rate one kind of evidence from 0 to 1. They are combined with fixed weights
-      (a weighted noisy-OR) into a quotient from 0 to 100. Live streams get a provisional score after an hour.</p>
+    <p>When a stream ends, ${Object.keys(COMPONENTS).length} detectors each rate one kind of evidence from 0 to 1. They are combined with fixed weights
+      (a weighted noisy-OR) into a quotient from 0 to 100. One detector on its own can add at most 30 points; going higher
+      needs a second detector to agree, because any single detector can misfire on an unusual but innocent stream.
+      Live streams get a provisional score after an hour.</p>
+    <p>Chat engagement is compared with streams of a similar size in the same language, then adjusted for the stream’s main
+      category and for similar categories (social, creative, gambling, sports or games). A category with few recent streams
+      leans on its group, and no category can shift the baseline by more than 1.5 standard deviations, so a category full of
+      botted streams cannot make quiet chat look normal.</p>
     <ul>${Object.entries(COMPONENTS).map(([k, [name, desc]]) => `<li><b>${name}</b> (weight ${WEIGHTS[k]}): ${desc}.</li>`).join('')}</ul>
     <p><b>Confidence</b> reflects how many detectors had enough data and how long the stream was observed. A channel’s
-      quotient is a confidence- and recency-weighted average of its last ten streams.</p>
+      quotient is a confidence- and recency-weighted average of its last ten streams, pulled towards zero when there are only
+      a few, so one stream cannot put a channel at the top.</p>
     <h2>Limits</h2>
     <ul>
       <li>The weights are hand-set and have not been calibrated against confirmed cases.</li>

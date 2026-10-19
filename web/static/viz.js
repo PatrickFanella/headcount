@@ -41,11 +41,12 @@ const fmtTick = (v) => (v < 1 ? String(+v.toFixed(2)) : compact(v));
 
 // ---------- engagement map ----------
 
-export function renderEngagementMap(container, data, lang) {
-  const pts = data.points.filter((p) => !lang || p.language === lang)
+export function renderEngagementMap(container, data, lang, cat = '') {
+  const pts = data.points.filter((p) => (!lang || p.language === lang) && (!cat || p.game_name === cat))
     .filter((p) => p.median_viewers > 0 && p.chatters_per_k != null);
-  const fit = data.fits[lang] || data.fits[''];
-  const fitNote = lang && !data.fits[lang] && fit ? 'too few streams for a separate line; showing the all-language line' : '';
+  const own = cat ? data.fits[`cat:${cat}`] : data.fits[lang];
+  const fit = own || data.fits[lang] || data.fits[''];
+  const fitNote = (lang || cat) && !own && fit ? `too few streams for a separate ${cat ? 'category' : 'language'} line; showing the ${cat && data.fits[lang] ? 'language' : 'all-stream'} line` : '';
   container.innerHTML = '';
   if (!pts.length) {
     container.innerHTML = '<div class="empty">No scored streams with chat data in this window.</div>';

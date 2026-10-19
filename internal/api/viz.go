@@ -101,6 +101,18 @@ func (s *Server) engagement(w http.ResponseWriter, r *http.Request) {
 			fits[lang] = f
 		}
 	}
+	byCat := map[string][2][]float64{}
+	for _, p := range points {
+		if p.GameName != nil && *p.GameName != "" {
+			g := byCat[*p.GameName]
+			byCat[*p.GameName] = [2][]float64{append(g[0], p.MedianViewers), append(g[1], p.ChattersPerK)}
+		}
+	}
+	for cat, g := range byCat {
+		if f, ok := fitEngagement(g[0], g[1], minFitLang); ok {
+			fits["cat:"+cat] = f
+		}
+	}
 	raw, err := json.Marshal(map[string]any{
 		"days": days, "limit": engagementLimit, "truncated": len(points) == engagementLimit,
 		"points": points, "fits": fits,
