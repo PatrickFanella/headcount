@@ -57,7 +57,7 @@ They combine as a weighted noisy-OR: `quotient = 100 × (1 − Π(1 − eᵢ))` 
 family's combined evidence is capped at 0.3 plus the strongest evidence from
 another family, so one line of evidence gives at most 30. Spike-based
 detectors are unavailable when the median change between Helix updates
-exceeds 5%, as for channels whose count jumps randomly on every refresh. Confidence is the share of total weight that
+exceeds 8% (the size of spike the detectors look for), as for channels whose count jumps randomly on every refresh. Confidence is the share of total weight that
 could be evaluated, scaled by observed minutes (full at 3 hours). A channel's
 quotient is the confidence- and recency-weighted average of its last ten
 streams, with a prior worth half a full-confidence stream at 0.

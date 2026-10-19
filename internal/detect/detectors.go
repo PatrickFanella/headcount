@@ -55,12 +55,15 @@ type Prepared struct {
 
 // MaxNoise is the update-to-update noise above which spike-based detectors
 // stand down.
-const MaxNoise = 0.05
+const MaxNoise = 0.08
 
 // Noisy reports whether the viewer count is too erratic for spike detection.
 func (p Prepared) Noisy() bool { return p.Noise > MaxNoise }
 
-var noisy = unavailable("Twitch viewer count too erratic between updates")
+func (p Prepared) noisy() Component {
+	return Component{Reason: "Twitch viewer count too erratic between updates",
+		Values: map[string]float64{"update_noise": p.Noise}}
+}
 
 const baselineWindow = 31
 
@@ -91,7 +94,7 @@ func PeriodicSpikes(p Prepared) Component {
 		return unavailable("too short")
 	}
 	if p.Noisy() {
-		return noisy
+		return p.noisy()
 	}
 	bestLag, bestACF := 0, 0.0
 	maxLag := min(120, n/3)
@@ -115,7 +118,7 @@ func PeriodicSpikes(p Prepared) Component {
 	skew := Skewness(p.Rel)
 	amp := Quantile(p.Rel, 0.95)
 	values := map[string]float64{"period_min": float64(bestLag), "acf": bestACF, "skew": skew, "p95_rel": amp,
-		"cycles": 0}
+		"cycles": 0, "update_noise": p.Noise}
 	if bestLag == 0 {
 		return Component{Available: true, Values: values}
 	}
@@ -132,7 +135,7 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 		return unavailable("too short")
 	}
 	if p.Noisy() {
-		return noisy
+		return p.noisy()
 	}
 	explained := func(i int, delta float64) bool {
 		for _, r := range d.Raids {
@@ -189,7 +192,7 @@ func SpikeChatLift(d StreamData, p Prepared) Component {
 		return unavailable("too short")
 	}
 	if p.Noisy() {
-		return noisy
+		return p.noisy()
 	}
 	ep := spikeEpisodes(d, p)
 	if len(ep) == 0 {
@@ -296,7 +299,7 @@ func SpikeFollowLift(d StreamData, p Prepared) Component {
 		return unavailable("too short")
 	}
 	if p.Noisy() {
-		return noisy
+		return p.noisy()
 	}
 	ep := spikeEpisodes(d, p)
 	if len(ep) == 0 {
@@ -403,7 +406,7 @@ func StartRamp(d StreamData, p Prepared) Component {
 		return unavailable("start not observed")
 	}
 	if p.Noisy() {
-		return noisy
+		return p.noisy()
 	}
 	med := Median(p.Viewers)
 	minutes := -1

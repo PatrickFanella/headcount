@@ -270,7 +270,7 @@ func TestNoisyCountsDisableSpikeDetectors(t *testing.T) {
 	held := 4000.0
 	for i := range v {
 		if i%4 == 0 {
-			held = math.Round(4000 * (1 + 0.15*(r.Float64()*2-1)))
+			held = math.Round(4000 * (1 + 0.25*(r.Float64()*2-1)))
 		}
 		v[i] = held
 	}
