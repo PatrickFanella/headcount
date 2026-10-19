@@ -130,7 +130,7 @@ async function channelView(login) {
       <th class="r">Peak</th><th>Quotient</th></tr></thead><tbody>
       ${streams.map((s) => `<tr data-href="#/s/${s.id}">
         <td>${s.ended_at ? '' : '<span class="live-dot" title="live"></span>'}${dateTime(s.started_at)}</td>
-        <td class="num">${s.minutes ? dur(0, s.minutes * 60000) : '–'}</td>
+        <td class="num">${dur(s.started_at, s.ended_at || Date.now())}</td>
         <td>${esc(s.game_name ?? '')}</td>
         <td class="r num">${n(s.avg_viewers)}</td>
         <td class="r num">${n(s.peak_viewers)}</td>
