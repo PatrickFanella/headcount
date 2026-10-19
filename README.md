@@ -40,20 +40,30 @@ detectors each rate one kind of evidence from 0 to 1:
 |---|---|---|
 | `periodic_spikes` | 0.6 | Upward viewer spikes that repeat at a fixed period and return to baseline |
 | `synchronized_spikes` | 0.5 | Spikes that start in the same minutes as another channel's more often than chance (binomial test, Bonferroni-corrected; discounted when many channels spike together) |
-| `spike_chat_lift` | 0.5 | Chat does not grow when viewers spike |
-| `chat_engagement` | 0.5 | Chatters per 1k viewers far below a peer baseline fitted on log(viewers) |
+| `spike_chat_lift` | 0.5 | Chat does not grow when viewers spike, comparing each unexplained spike with the minutes just before it; needs several material spikes |
+| `chat_engagement` | 0.5 | Chatters per 1k viewers far below a peer baseline fitted on log(viewers), per language, adjusted for the stream's category |
 | `follower_purge` | 0.4 | Large follower drops (Twitch removing fake follows) |
 | `chatter_accounts` | 0.4 | High share of chatters with accounts under 30 days old, or suspended/deleted |
+| `shared_accounts` | 0.4 | Chatters with accounts under 90 days old, or suspended, who also chatted in two or more other tracked channels in the week before |
 | `follow_bursts` | 0.3 | Minutes with far more follows than the stream's normal rate |
 | `unexplained_jumps` | 0.3 | Sharp viewer changes with no raid or category change nearby |
-| `spike_follow_lift` | 0.25 | Follows do not speed up when viewers spike |
+| `spike_follow_lift` | 0.25 | Follows do not speed up when viewers spike (same per-spike comparison) |
 | `chat_repetition` | 0.15 | Share of chat that is one repeated message |
 | `start_ramp` | 0.1 | Viewers arrive implausibly fast after going live |
 
-They combine as a weighted noisy-OR: `quotient = 100 × (1 − Π(1 − wᵢ·sᵢ))`.
-Confidence is the share of total weight that could be evaluated, scaled by
-observed minutes (full at 3 hours). A channel's quotient is the confidence- and
-recency-weighted average of its last ten streams.
+They combine as a weighted noisy-OR: `quotient = 100 × (1 − Π(1 − eᵢ))` with
+`eᵢ = wᵢ·sᵢ`, except that the largest `e` is capped at 0.3 plus the second
+largest. One detector alone therefore gives at most 30; a higher quotient
+needs a second detector to agree. Confidence is the share of total weight that
+could be evaluated, scaled by observed minutes (full at 3 hours). A channel's
+quotient is the confidence- and recency-weighted average of its last ten
+streams, with a prior worth half a full-confidence stream at 0.
+
+The chat baseline is a log-log line per language (global when a language has
+fewer than 15 peer streams in 7 days). Each stream's expectation is then shifted
+by offsets for its category family (social, creative, gambling, sports, games)
+and its main category. Offsets are shrunk towards zero by 10 pseudo-streams,
+fitted without outliers, and capped at 1.5 SD in total.
 
 The weights are hand-set and uncalibrated. Bump `score.Version` when detector
 logic changes.
@@ -121,5 +131,9 @@ go test ./...
   numbers for innocent reasons. Raids, category changes and sub-only or
   emote-only chat are accounted for; the rest are not.
 - A third party can view-bot a channel to get it penalized.
-- The chat baseline is per language when a language has at least 15 peer
-  streams in the last 7 days, and global otherwise. It is not per category.
+- Category families are a fixed list of non-game categories; every other
+  category counts as a game. A category that is mostly botted can still pull
+  its own baseline down, up to the 1.5 SD cap.
+- Shared accounts only sees chatters in tracked channels. Raid trains and
+  friend groups also share chatters; the young-account filter reduces, but
+  does not remove, that overlap.
