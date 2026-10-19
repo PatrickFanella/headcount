@@ -1,24 +1,10 @@
+import {
+  api, n, q, pct, time, dateTime, esc, dur, el, niceTicks, compact, nearest, tipRow, showTooltip, hideTooltip, svgX,
+  reducedMotion, prepareMinutes, dec,
+} from './kit.js';
+import { renderEngagementMap, renderPeriodicity, renderSynchrony, renderAccountAges, renderChannelHistory, sparkline } from './viz.js';
+
 const app = document.getElementById('app');
-const tooltip = document.getElementById('tooltip');
-const SVG = 'http://www.w3.org/2000/svg';
-
-const fmt = new Intl.NumberFormat();
-const n = (v) => (v == null || Number.isNaN(v) ? '–' : fmt.format(Math.round(v)));
-const q = (v) => (v == null ? '–' : Math.round(v).toString());
-const pct = (v) => (v == null ? '–' : `${Math.round(v * 100)}%`);
-const time = (d) => new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-const dateTime = (d) => new Date(d).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const dur = (a, b) => {
-  const m = Math.round((new Date(b) - new Date(a)) / 60000);
-  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
-};
-
-async function api(path) {
-  const r = await fetch(`/api${path}`);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return r.json();
-}
 
 const COMPONENTS = {
   periodic_spikes: ['Periodic spikes', 'Viewer spikes that repeat at a fixed interval and return to the same baseline'],
@@ -48,20 +34,21 @@ function meter(value, confidence) {
 }
 
 function setActiveNav() {
-  const h = location.hash || '#/';
+  const h = (location.hash || '#/').split('?')[0];
   document.querySelectorAll('.top nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === h));
 }
 
 async function route() {
   setActiveNav();
   hideTooltip();
-  const h = location.hash.replace(/^#/, '') || '/';
+  const h = location.hash.replace(/^#/, '').split('?')[0] || '/';
   const parts = h.split('/').filter(Boolean);
   app.innerHTML = '<div class="empty">Loading…</div>';
   try {
     if (parts[0] === 'c' && parts[1]) await channelView(decodeURIComponent(parts[1]));
     else if (parts[0] === 's' && parts[1]) await streamView(parts[1]);
     else if (parts[0] === 'about') aboutView();
+    else if (parts[0] === 'engagement') await engagementView();
     else await leaderboardView(parts[0] === 'live');
   } catch (e) {
     app.innerHTML = `<div class="empty">Couldn’t load this page: ${esc(e.message)}</div>`;
@@ -72,7 +59,9 @@ window.addEventListener('hashchange', route);
 // ---------- leaderboard ----------
 
 async function leaderboardView(liveOnly) {
-  const [ov, rows] = await Promise.all([api('/overview'), api(`/channels?limit=500${liveOnly ? '&live=1' : ''}`)]);
+  const [ov, rows, sparks] = await Promise.all([api('/overview'), api(`/channels?limit=500${liveOnly ? '&live=1' : ''}`),
+    api('/sparklines').catch(() => null)]);
+  const sparkEnd = sparks ? sparks.now : 0, sparkStart = sparkEnd - (sparks?.window_minutes ?? 180) * 60;
   const hours = ov.first_sample ? (new Date(ov.last_sample) - new Date(ov.first_sample)) / 3.6e6 : 0;
   app.innerHTML = `
     <h1>${liveOnly ? 'Live now' : 'Leaderboard'}</h1>
@@ -86,9 +75,10 @@ async function leaderboardView(liveOnly) {
       <div class="tile"><div class="v num">${hours < 48 ? `${hours.toFixed(1)}h` : `${(hours / 24).toFixed(1)}d`}</div><div class="l">of data collected</div></div>
     </div>
     ${hours < 24 ? '<p class="note">Collection started recently. Scores need several full streams and a chat baseline built from many channels, so early values are provisional and change often.</p>' : ''}
-    <table>
+    ${sparks ? '<p class="muted small table-note">“Last 3h” shows each channel’s viewers over the past three hours, scaled to its own range; a line that stops early means the channel went offline.</p>' : ''}
+    <div class="table-wrap"><table>
       <thead><tr>
-        <th>#</th><th>Channel</th><th class="r">Viewers</th><th>Category</th><th>Title</th>
+        <th>#</th><th>Channel</th><th class="r">Viewers</th>${sparks ? '<th title="Viewers over the last 3 hours, 10-minute averages">Last 3h</th>' : ''}<th>Category</th><th>Title</th>
         <th>Quotient</th><th class="r">Streams</th>
       </tr></thead>
       <tbody>${rows.map((c, i) => {
@@ -99,13 +89,14 @@ async function leaderboardView(liveOnly) {
           <td>${c.live_stream_id ? '<span class="live-dot" title="live"></span>' : ''}<a href="#/c/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
             <span class="tier">${esc(c.tier)}</span></td>
           <td class="r num">${c.viewers != null ? n(c.viewers) : '<span class="muted">offline</span>'}</td>
-          <td>${esc(c.game_name ?? '')}</td>
+          ${sparks ? `<td class="spark-cell">${sparkline(sparks.channels[c.id], sparkStart, sparkEnd)}</td>` : ''}
+          <td class="cat" title="${esc(c.game_name ?? '')}">${esc(c.game_name ?? '')}</td>
           <td class="title" title="${esc(c.title ?? '')}">${esc(c.title ?? '')}</td>
           <td>${meter(value, conf)}</td>
           <td class="r num">${n(c.scored_streams)}</td>
         </tr>`;
       }).join('')}</tbody>
-    </table>`;
+    </table></div>`;
   app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', (e) => {
     if (e.target.closest('a')) return;
     location.hash = tr.dataset.href;
@@ -125,6 +116,7 @@ async function channelView(login) {
       <div class="tile"><div class="v num">${pct(c.quotient_confidence)}</div><div class="l">confidence</div></div>
       <div class="tile"><div class="v num">${streams.length}</div><div class="l">streams recorded</div></div>
     </div>
+    ${streams.length ? '<h2>Stream history</h2><div class="card" id="history"></div>' : ''}
     <h2>Streams</h2>
     ${streams.length ? `<table><thead><tr><th>Started</th><th>Length</th><th>Category</th><th class="r">Avg viewers</th>
       <th class="r">Peak</th><th>Quotient</th></tr></thead><tbody>
@@ -137,6 +129,44 @@ async function channelView(login) {
         <td>${meter(s.quotient, s.confidence)}${s.final === false ? ' <span class="muted">provisional</span>' : ''}</td>
       </tr>`).join('')}</tbody></table>` : '<div class="empty">No streams recorded yet.</div>'}`;
   app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', () => { location.hash = tr.dataset.href; }));
+  if (streams.length) renderChannelHistory(document.getElementById('history'), streams);
+}
+
+// ---------- engagement map ----------
+
+async function engagementView() {
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const days = ['1', '7', '14'].includes(params.get('days')) ? params.get('days') : '7';
+  const data = await api(`/engagement?days=${days}`);
+  const langs = [...new Set(data.points.map((p) => p.language).filter(Boolean))]
+    .map((l) => [l, data.points.filter((p) => p.language === l).length]).sort((a, b) => b[1] - a[1]);
+  const names = new Intl.DisplayNames([], { type: 'language' });
+  const langName = (l) => { try { return names.of(l); } catch { return l; } };
+  app.innerHTML = `
+    <h1>Engagement map</h1>
+    <p class="sub">Every recently scored stream, placed by audience size and how many of those viewers chat. Bigger streams
+      have proportionally quieter chat, so the grey line shows what is typical for each size. Streams far below the band have
+      a big audience but a quiet chat, which is what bot viewers produce. That is a signal, not proof: chat can also be quiet
+      because of restricted chat, a non-chatty audience, or embedded and muted players.</p>
+    <div class="filters" role="group" aria-label="Filters">
+      <label>Window <select id="em-days">
+        ${[['1', 'Last 24 hours'], ['7', 'Last 7 days'], ['14', 'Last 14 days']].map(([v, t]) => `<option value="${v}"${v === days ? ' selected' : ''}>${t}</option>`).join('')}
+      </select></label>
+      <label>Language <select id="em-lang"><option value="">All languages (${data.points.length})</option>
+        ${langs.map(([l, c]) => `<option value="${esc(l)}">${esc(langName(l))} (${c})</option>`).join('')}
+      </select></label>
+      ${data.truncated ? `<span class="muted small">showing the latest ${n(data.limit)} streams</span>` : ''}
+    </div>
+    <div class="card" id="em"></div>
+    <p class="caption">The line is refitted here from the streams shown, the same way the scorer fits its baseline (log-log, outliers
+      removed); the scorer uses a per-language line when a language has enough streams. Hover a point for the scorer’s own expected
+      value and its distance from it in standard deviations (SD); click to open the stream.</p>`;
+  const box = document.getElementById('em');
+  const langSel = document.getElementById('em-lang');
+  const draw = () => renderEngagementMap(box, data, langSel.value);
+  draw();
+  langSel.addEventListener('change', draw);
+  document.getElementById('em-days').addEventListener('change', (e) => { location.hash = `#/engagement?days=${e.target.value}`; });
 }
 
 // ---------- stream ----------
@@ -173,7 +203,11 @@ function followDeltas(totals) {
 }
 
 async function streamView(id) {
-  const d = await api(`/streams/${id}`);
+  const [d, onsets, ages] = await Promise.all([
+    api(`/streams/${id}`),
+    api(`/streams/${id}/onsets`).catch(() => null),
+    api(`/streams/${id}/account-ages`).catch(() => null),
+  ]);
   const s = d.stream;
   const score = d.score;
   const { smooth, baseline } = baselineOf(d.viewers);
@@ -197,18 +231,26 @@ async function streamView(id) {
       <div class="tile"><div class="v num">${n(acc.chatters)}</div><div class="l">unique chatters</div></div>
     </div>
     <div class="card" id="charts"></div>
+    <h2>Repeating spikes</h2>
+    <div class="card" id="periodicity"></div>
+    <h2>Spikes at the same time as other channels</h2>
+    <div class="card" id="synchrony"></div>
     <h2>Score breakdown</h2>
     <div class="card" id="components"></div>
     <h2>Chatter accounts</h2>
-    <div class="card">${acc.known ? `${n(acc.known)} of ${n(acc.chatters)} chatters looked up ·
+    <div class="card">${acc.known ? `<p class="stats-line">${n(acc.known)} of ${n(acc.chatters)} chatters looked up ·
       <b class="num">${pct(acc.new_30d / acc.known)}</b> created in the 30 days before the stream ·
-      <b class="num">${pct(acc.missing / acc.known)}</b> suspended or deleted` : '<span class="muted">No chatter accounts looked up yet.</span>'}</div>`;
+      <b class="num">${pct(acc.missing / acc.known)}</b> suspended or deleted</p>` : ''}<div id="ages"></div></div>`;
 
   renderCharts(document.getElementById('charts'), {
     viewers: d.viewers, smooth, baseline, chatters, follows,
     events: d.events.filter((e) => e.kind === 'raid_in' || e.kind === 'game_change'),
+    onsets: onsets ? onsets.own : [],
   });
+  renderPeriodicity(document.getElementById('periodicity'), prepareMinutes(d.viewers), score?.components?.periodic_spikes);
+  renderSynchrony(document.getElementById('synchrony'), onsets, s.display_name, !!score);
   renderComponents(document.getElementById('components'), score);
+  renderAccountAges(document.getElementById('ages'), ages, !acc.known);
 }
 
 function renderComponents(el, score) {
@@ -229,8 +271,8 @@ function renderComponents(el, score) {
       <div class="name">${name}<small>${desc}</small></div>
       ${c.available ? `<div class="bar" role="img" aria-label="strength ${pct(c.strength)}"><div style="width:${Math.max(1, c.strength * 100)}%"></div></div>`
         : `<div class="muted">not available${c.reason ? ` – ${esc(c.reason)}` : ''}</div>`}
-      ${c.available && c.reason ? `<div class="detail">${esc(c.reason)}</div>` : ''}
       <div class="num r" style="text-align:right">${c.available ? pct(c.strength) : ''}<div class="muted" style="font-size:11px">weight ${WEIGHTS[k]}</div></div>
+      ${c.available && c.reason ? `<div class="detail">${esc(c.reason)}</div>` : ''}
       ${details ? `<div class="detail">${esc(details)}</div>` : ''}
     </div>`;
   }).join('');
@@ -238,52 +280,19 @@ function renderComponents(el, score) {
 
 // ---------- charts ----------
 
-function el(name, attrs = {}, parent) {
-  const e = document.createElementNS(SVG, name);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-  if (parent) parent.appendChild(e);
-  return e;
-}
-
-function niceTicks(max, count = 4) {
-  if (!(max > 0)) return [0];
-  const raw = max / count;
-  const mag = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
-  const ticks = [];
-  for (let v = 0; v <= max + step * 0.001; v += step) ticks.push(v);
-  if (ticks[ticks.length - 1] < max) ticks.push(ticks[ticks.length - 1] + step);
-  return ticks;
-}
-
-function compact(v) {
-  if (Math.abs(v) >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `${(v / 1e3).toFixed(v >= 1e4 ? 0 : 1)}k`;
-  return String(Math.round(v));
-}
-
-function nearest(points, t) {
-  let lo = 0, hi = points.length - 1;
-  if (hi < 0) return null;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (points[mid][0] < t) lo = mid + 1; else hi = mid;
-  }
-  const a = points[Math.max(0, lo - 1)], b = points[lo];
-  const p = Math.abs(a[0] - t) < Math.abs(b[0] - t) ? a : b;
-  return Math.abs(p[0] - t) <= 90 ? p : null;
-}
+const REPLAY_SPEEDS = [[10, '10 min/s'], [30, '30 min/s'], [60, '1 h/s'], [120, '2 h/s']];
 
 // Three stacked panels on one time axis. Each has its own y-scale, so there
-// is never a second axis on one chart.
+// is never a second axis on one chart. A replay control sweeps the shared
+// crosshair across the stream with live counters.
 function renderCharts(container, data) {
   const all = [...data.viewers, ...data.chatters, ...data.follows].map((p) => p[0]);
   if (!all.length) {
     container.innerHTML = '<div class="empty">No samples recorded for this stream.</div>';
     return;
   }
-  const t0 = Math.min(...data.viewers.map((p) => p[0]), ...all);
-  const t1 = Math.max(...data.viewers.map((p) => p[0]), ...all);
+  const t0 = Math.min(...all);
+  const t1 = Math.max(...all);
   const panels = [
     { key: 'viewers', label: 'Concurrent viewers', note: 'Helix count; dashed line is the 31-minute rolling median', height: 220,
       series: [
@@ -295,13 +304,31 @@ function renderCharts(container, data) {
     { key: 'follows', label: 'Follows per minute', note: 'from follower-total changes', height: 120, bars: true,
       series: [{ name: 'Follows', color: 'var(--series-3)', points: data.follows }] },
   ];
-  container.innerHTML = `<div class="legend">
-    <span><i style="background:var(--series-1)"></i>Viewers</span>
-    <span><i class="dash"></i>Viewer baseline</span>
-    <span><i style="background:var(--series-2)"></i>Unique chatters / min</span>
-    <span><i style="background:var(--series-3)"></i>Follows / min</span>
-    <span><i style="background:var(--text-muted)"></i>Raid or category change</span>
-  </div>`;
+  const onsets = data.onsets || [];
+  const speedOpts = REPLAY_SPEEDS.map(([v, t]) => `<option value="${v}"${v === 30 ? ' selected' : ''}>${t}</option>`).join('');
+  container.innerHTML = `
+    <div class="replay" role="group" aria-label="Replay the stream">
+      <button type="button" class="play" aria-label="Play replay">▶ Replay</button>
+      <label class="speed">Speed <select aria-label="Replay speed">${speedOpts}</select></label>
+      <input type="range" class="scrub" min="${t0}" max="${t1}" step="60" value="${t0}" aria-label="Replay position">
+      <div class="counters" aria-live="off">
+        <div><span class="cv num" data-k="time">–</span><span class="cl">time</span></div>
+        <div><span class="cv num" data-k="viewers">–</span><span class="cl"><i style="background:var(--series-1)"></i>viewers</span></div>
+        <div><span class="cv num" data-k="chatters">–</span><span class="cl"><i style="background:var(--series-2)"></i>chatters / min</span></div>
+        <div><span class="cv num" data-k="perk">–</span><span class="cl">chatters per 1k viewers</span></div>
+      </div>
+    </div>
+    <p class="caption">Replay sweeps the stream at the chosen pace. Watch chatters per 1,000 viewers: when viewers jump and that number
+      drops, the new viewers are not chatting. Bot viewers produce that pattern, but so do embeds and front-page placement, so it is a
+      signal, not proof.</p>
+    <div class="legend">
+      <span><i style="background:var(--series-1)"></i>Viewers</span>
+      <span><i class="dash"></i>Viewer baseline</span>
+      ${onsets.length ? '<span><svg class="key" width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3.5" class="onset-dot"/></svg>Spike onset (detected)</span>' : ''}
+      <span><i style="background:var(--series-2)"></i>Unique chatters / min</span>
+      <span><i style="background:var(--series-3)"></i>Follows / min</span>
+      <span><i style="background:var(--text-muted)"></i>Raid or category change</span>
+    </div>`;
 
   const margin = { l: 48, r: 12, t: 6, b: 22 };
   const crosshairs = [];
@@ -314,7 +341,8 @@ function renderCharts(container, data) {
     wrap.innerHTML = `<div class="label">${p.label}${p.note ? `<small>${p.note}</small>` : ''}</div>`;
     container.appendChild(wrap);
     const h = p.height;
-    const svg = el('svg', { viewBox: `0 0 ${width} ${h}`, height: h, role: 'img', 'aria-label': p.label });
+    const svg = el('svg', { viewBox: `0 0 ${width} ${h}`, height: h, role: 'img',
+      'aria-label': p.key === 'viewers' && onsets.length ? `${p.label}, with ${onsets.length} detected spike onsets` : p.label });
     wrap.appendChild(svg);
     const vals = p.series.flatMap((s) => s.points.map((pt) => pt[1])).filter((v) => v != null);
     const minV = Math.min(0, ...vals);
@@ -328,15 +356,18 @@ function renderCharts(container, data) {
     }
     // hourly ticks
     const hour = 3600;
-    for (let tt = Math.ceil(t0 / hour) * hour; tt <= t1; tt += hour * Math.max(1, Math.round((t1 - t0) / hour / 10))) {
+    for (let tt = Math.ceil(t0 / hour) * hour; tt <= t1; tt += hour * Math.max(1, Math.round((t1 - t0) / hour / (width < 600 ? 5 : 10)))) {
       el('text', { x: x(tt), y: h - 4, 'text-anchor': 'middle' }, axis).textContent = time(tt * 1000);
     }
+    let labelEnd = -Infinity;
     for (const e of data.events) {
       const ex = x(new Date(e.ts).getTime() / 1000);
       el('line', { class: 'event-line', x1: ex, x2: ex, y1: margin.t, y2: h - margin.b }, svg);
-      if (p.key === 'viewers') {
+      if (p.key === 'viewers' && ex > labelEnd) {
         const label = e.kind === 'raid_in' ? `raid ${e.detail.from ?? ''} (${n(e.detail.viewers)})` : `→ ${e.detail.to ?? ''}`;
-        el('text', { class: 'event-label', x: ex + 4, y: margin.t + 10 }, svg).textContent = label;
+        const t = el('text', { class: 'event-label', x: ex + 4, y: margin.t + 10 }, svg);
+        t.textContent = label;
+        labelEnd = ex + 4 + t.getComputedTextLength() + 8;
       }
     }
     for (const s of p.series) {
@@ -355,40 +386,86 @@ function renderCharts(container, data) {
         else requestAnimationFrame(() => path.style.setProperty('--len', path.getTotalLength()));
       }
     }
+    if (p.key === 'viewers') {
+      // Detected onsets, placed on the smoothed viewer line.
+      for (const o of onsets) {
+        const v = nearest(data.smooth, o.ts, 120);
+        if (!v) continue;
+        el('circle', { cx: x(o.ts), cy: y(v[1]), r: 3.5, class: 'onset-dot' }, svg);
+      }
+    }
     const cross = el('line', { class: 'crosshair', y1: margin.t, y2: h - margin.b, visibility: 'hidden' }, svg);
     crosshairs.push(cross);
     const hit = el('rect', { x: margin.l, y: 0, width: width - margin.l - margin.r, height: h, fill: 'transparent' }, svg);
     hit.addEventListener('mousemove', (ev) => {
-      const r = svg.getBoundingClientRect();
-      const px = ((ev.clientX - r.left) / r.width) * width;
-      const t = t0 + ((px - margin.l) / (width - margin.l - margin.r)) * (t1 - t0);
-      for (const c of crosshairs) { c.setAttribute('x1', x(t)); c.setAttribute('x2', x(t)); c.setAttribute('visibility', 'visible'); }
+      if (replay.playing) return;
+      const t = t0 + ((svgX(svg, width, ev) - margin.l) / (width - margin.l - margin.r)) * (t1 - t0);
+      setCursor(t);
       const v = nearest(data.viewers, t), b = nearest(data.baseline, t), c = nearest(data.chatters, t), f = nearest(data.follows, t);
-      const row = (color, label, val) => `<div class="row"><span><i style="background:${color}"></i>${label}</span><b class="num">${val}</b></div>`;
-      showTooltip(ev, `<div class="t">${time(t * 1000)}</div>
-        ${row('var(--series-1)', 'Viewers', v ? n(v[1]) : '–')}
-        ${row('var(--baseline)', 'Baseline', b ? n(b[1]) : '–')}
-        ${row('var(--series-2)', 'Chatters / min', c ? n(c[1]) : '–')}
-        ${row('var(--series-3)', 'Follows / min', f ? f[1].toFixed(1) : '–')}`);
+      const onset = onsets.find((o) => Math.abs(o.ts - t) <= 90);
+      showTooltip(ev, `<div class="t">${time(t * 1000)}${onset ? ` · spike onset (+${Math.round(onset.rel * 100)}%)` : ''}</div>
+        ${tipRow('var(--series-1)', 'Viewers', v ? n(v[1]) : '–')}
+        ${tipRow('var(--baseline)', 'Baseline', b ? n(b[1]) : '–')}
+        ${tipRow('var(--series-2)', 'Chatters / min', c ? n(c[1]) : '–')}
+        ${tipRow('var(--series-3)', 'Follows / min', f ? f[1].toFixed(1) : '–')}`);
     });
     hit.addEventListener('mouseleave', () => {
+      if (replay.playing) return;
       for (const c of crosshairs) c.setAttribute('visibility', 'hidden');
       hideTooltip();
     });
   }
-}
 
-function showTooltip(ev, html) {
-  tooltip.innerHTML = html;
-  tooltip.hidden = false;
-  const w = tooltip.offsetWidth, h = tooltip.offsetHeight;
-  let left = ev.clientX + 14, top = ev.clientY + 14;
-  if (left + w > innerWidth - 8) left = ev.clientX - w - 14;
-  if (top + h > innerHeight - 8) top = ev.clientY - h - 14;
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${top}px`;
+  // ----- replay -----
+  const btn = container.querySelector('.play');
+  const speedSel = container.querySelector('.speed select');
+  const scrub = container.querySelector('.scrub');
+  const counter = Object.fromEntries([...container.querySelectorAll('.cv')].map((e) => [e.dataset.k, e]));
+  const replay = { playing: false, t: t0, last: 0, raf: 0 };
+
+  function setCursor(t) {
+    for (const c of crosshairs) { c.setAttribute('x1', x(t)); c.setAttribute('x2', x(t)); c.setAttribute('visibility', 'visible'); }
+    const v = nearest(data.smooth, t, 120), c = nearest(data.chatters, t);
+    counter.time.textContent = time(t * 1000);
+    counter.viewers.textContent = v ? n(v[1]) : '–';
+    counter.chatters.textContent = c ? n(c[1]) : '–';
+    counter.perk.textContent = v && c && v[1] > 0 ? dec((c[1] / v[1]) * 1000) : '–';
+  }
+  function stop() {
+    replay.playing = false;
+    cancelAnimationFrame(replay.raf);
+    btn.textContent = '▶ Replay';
+    btn.setAttribute('aria-label', 'Play replay');
+  }
+  function frame(now) {
+    if (!replay.playing) return;
+    const dt = replay.last ? (now - replay.last) / 1000 : 0;
+    replay.last = now;
+    replay.t = Math.min(t1, replay.t + dt * Number(speedSel.value) * 60);
+    scrub.value = replay.t;
+    setCursor(replay.t);
+    if (replay.t >= t1 || !container.isConnected) { stop(); return; }
+    replay.raf = requestAnimationFrame(frame);
+  }
+  btn.addEventListener('click', () => {
+    if (replay.playing) { stop(); return; }
+    hideTooltip();
+    if (replay.t >= t1) replay.t = t0;
+    replay.playing = true;
+    replay.last = 0;
+    btn.textContent = '❚❚ Pause';
+    btn.setAttribute('aria-label', 'Pause replay');
+    replay.raf = requestAnimationFrame(frame);
+  });
+  scrub.addEventListener('input', () => {
+    stop();
+    replay.t = Number(scrub.value);
+    setCursor(replay.t);
+  });
+  setCursor(t0);
+  for (const c of crosshairs) c.setAttribute('visibility', 'hidden');
+  if (reducedMotion()) speedSel.value = '10';
 }
-function hideTooltip() { tooltip.hidden = true; }
 
 // ---------- about ----------
 
