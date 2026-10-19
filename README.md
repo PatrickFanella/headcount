@@ -80,6 +80,7 @@ Requires Docker. Create `.env` in the repository root:
 TWITCH_CLIENT_ID=...
 TWITCH_CLIENT_SECRET=...
 POSTGRES_PASSWORD=...
+API_DB_PASSWORD=...   # read-only role used by the dashboard API
 ```
 
 The Twitch app needs no user authorization; it uses the client-credentials
@@ -93,8 +94,18 @@ open http://localhost:18091/        # dashboard
 
 Postgres listens on `127.0.0.1:55432`. Optional collector settings:
 `TOP_N` (200), `END_GRACE_MINUTES` (4), `COLD_EVERY_MINUTES` (10),
-`LOG_LEVEL=debug`, and `SEED_LOGINS` (comma-separated channels to track before
-they reach the top 200).
+`LOG_LEVEL=debug`, `SEED_LOGINS` (comma-separated channels to track before
+they reach the top 200) and `CHATTER_RETENTION_DAYS` (30; per-chatter rows of
+older streams are replaced by a summary).
+
+The API connects as the read-only `susq_api` role, which the collector enables
+from `API_DB_PASSWORD`. It limits `/api/` requests to `RATE_PER_MINUTE` (120)
+per client with bursts of `RATE_BURST` (60). Behind a reverse proxy, set
+`TRUSTED_PROXIES` to its addresses so `X-Forwarded-For` is used.
+
+The `backup` service writes a nightly `pg_dump -Fc` to `./backups`, keeping 7
+days. On the homelab deployment, Dozor pulls a copy each night and alerts if
+it is older than 36 hours.
 
 ### Tests
 
