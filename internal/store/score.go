@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type StreamRef struct {
@@ -162,6 +165,16 @@ func (s *Store) ChatterAccounts(ctx context.Context, streamID int64, startedAt t
 		       count(*) FILTER (WHERE u.missing)
 		FROM stream_chatters sc JOIN twitch_users u ON u.id = sc.user_id
 		WHERE sc.stream_id = $1`, streamID, startedAt.Add(-newWithin)).Scan(&total, &newAccounts, &missing)
+	if err != nil || total > 0 {
+		return
+	}
+	// Chatter rows of older streams are pruned after summarizing.
+	err = s.Pool.QueryRow(ctx, `
+		SELECT total, new_accounts, missing FROM stream_chatter_summary WHERE stream_id = $1`,
+		streamID).Scan(&total, &newAccounts, &missing)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = nil
+	}
 	return
 }
 

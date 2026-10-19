@@ -97,6 +97,7 @@ func main() {
 	}
 	collector := chat.New(ls, st, h, log.With("component", "chat"))
 	scorer := score.New(st, log.With("component", "score"))
+	scorer.ChatterRetention = time.Duration(envInt("CHATTER_RETENTION_DAYS", 30)) * 24 * time.Hour
 
 	go poller.Run(ctx)
 	go collector.Run(ctx)

@@ -33,6 +33,11 @@ type Scorer struct {
 	baseline    *baselines
 	baselineAt  time.Time
 	lastLiveRun time.Time
+
+	// ChatterRetention is how long per-chatter rows are kept after a stream
+	// ends; older streams keep only a summary. Zero disables pruning.
+	ChatterRetention time.Duration
+	lastPrune        time.Time
 }
 
 func New(s *store.Store, log *slog.Logger) *Scorer { return &Scorer{store: s, log: log} }
@@ -110,7 +115,43 @@ func (s *Scorer) runOnce(ctx context.Context) error {
 		s.log.Info("scored", "final", len(done), "provisional", len(refs)-len(done), "channels", len(channels),
 			"demoted", demoted, "restored", restored)
 	}
+	if s.ChatterRetention > 0 && time.Since(s.lastPrune) > time.Hour {
+		s.lastPrune = time.Now()
+		s.prune(ctx)
+	}
 	return nil
+}
+
+// prune summarizes and removes per-chatter rows of old streams, then drops
+// cached accounts nothing references. Work is batched to keep transactions short.
+func (s *Scorer) prune(ctx context.Context) {
+	cutoff := time.Now().Add(-s.ChatterRetention)
+	var streams int
+	var rows, users int64
+	for range 100 {
+		n, r, err := s.store.PruneChatters(ctx, cutoff, newAccountAge, 50)
+		if err != nil {
+			s.log.Warn("prune chatters", "err", err)
+			return
+		}
+		streams, rows = streams+n, rows+r
+		if n == 0 {
+			break
+		}
+	}
+	for range 100 {
+		n, err := s.store.PruneUsers(ctx, cutoff, 10000)
+		if err != nil {
+			s.log.Warn("prune users", "err", err)
+			return
+		}
+		users += n
+		if n == 0 {
+			break
+		}
+	}
+	size, _ := s.store.DatabaseSize(ctx)
+	s.log.Info("retention", "streams", streams, "chatter_rows", rows, "users", users, "db_bytes", size)
 }
 
 // Build aligns a stream's recorded series to minute indices.
