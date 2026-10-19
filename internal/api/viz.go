@@ -3,10 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Endpoints that feed the dashboard's charts. Each query is bounded by a
@@ -264,6 +267,21 @@ func (s *Server) streamAccountAges(w http.ResponseWriter, r *http.Request) {
 // rows from stream_chatters, so it returns an empty histogram once those rows
 // have been pruned for an old stream.
 func (s *Server) accountAgeHistogram(ctx context.Context, streamID int64) (json.RawMessage, error) {
+	// Streams past chatter retention keep only a summary: monthly counts, no weeks.
+	summary, err := s.queryJSON(ctx, `
+		SELECT json_build_object(
+			'started_at', st.started_at, 'chatters', x.total, 'known', x.total, 'missing', x.missing,
+			'months', (SELECT coalesce(json_agg(json_build_array(k, v::int) ORDER BY k), '[]')
+			           FROM jsonb_each_text(x.created_months) AS m(k, v)),
+			'weeks', '[]'::json, 'summarized', true)
+		FROM stream_chatter_summary x JOIN streams st ON st.id = x.stream_id
+		WHERE x.stream_id = $1`, streamID)
+	if err == nil {
+		return summary, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
 	return s.queryJSON(ctx, `
 		WITH st AS (SELECT started_at FROM streams WHERE id = $1),
 		u AS MATERIALIZED (

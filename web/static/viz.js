@@ -484,7 +484,9 @@ export function renderAccountAges(container, data, withSummary = true) {
     mm++; if (mm > 12) { mm = 1; yy++; }
   }
   const cutoff = start.getTime() - 30 * 864e5;
-  columnChart(container, {
+  if (data.summarized) {
+    container.insertAdjacentHTML('beforeend', '<p class="muted">This stream is past the 30-day chatter retention, so only monthly counts are kept.</p>');
+  } else columnChart(container, {
     label: weekEnd > start ? 'Accounts created per week, from a year before the stream' : 'Accounts created per week, year before the stream',
     note: 'shaded: the 30 days the scorer counts as new',
     items: weeks, height: 150, highlightFrom: cutoff, end: start.getTime() + 7 * 864e5,
