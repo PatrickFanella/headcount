@@ -110,4 +110,5 @@ go test ./...
   numbers for innocent reasons. Raids, category changes and sub-only or
   emote-only chat are accounted for; the rest are not.
 - A third party can view-bot a channel to get it penalized.
-- The chat baseline is global, not per language or category.
+- The chat baseline is per language when a language has at least 15 peer
+  streams in the last 7 days, and global otherwise. It is not per category.

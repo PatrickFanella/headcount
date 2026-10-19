@@ -15,9 +15,50 @@ type baseline struct {
 	sd       float64
 }
 
-const minPeers = 20
+const (
+	minPeers     = 20
+	minLangPeers = 15
+)
 
-func fitBaseline(peers []store.PeerStat) *baseline {
+// baselines holds a global fit and per-language fits. Chat culture differs by
+// language, so a language with enough peer streams gets its own baseline.
+type baselines struct {
+	global *baseline
+	byLang map[string]*baseline
+}
+
+func fitBaselines(peers []store.PeerStat) *baselines {
+	b := &baselines{global: fitBaseline(peers), byLang: map[string]*baseline{}}
+	groups := map[string][]store.PeerStat{}
+	for _, p := range peers {
+		if p.Language != "" {
+			groups[p.Language] = append(groups[p.Language], p)
+		}
+	}
+	for lang, g := range groups {
+		if len(g) < minLangPeers {
+			continue
+		}
+		if fit := fitBaselineMin(g, minLangPeers); fit.ok {
+			b.byLang[lang] = fit
+		}
+	}
+	return b
+}
+
+// For returns the baseline for a language and whether it is language-specific.
+func (b *baselines) For(lang string) (*baseline, bool) {
+	if l, ok := b.byLang[lang]; ok {
+		return l, true
+	}
+	return b.global, false
+}
+
+func (b *baselines) ok() bool { return b != nil && b.global != nil && b.global.ok }
+
+func fitBaseline(peers []store.PeerStat) *baseline { return fitBaselineMin(peers, minPeers) }
+
+func fitBaselineMin(peers []store.PeerStat, minN int) *baseline {
 	xs := make([]float64, 0, len(peers))
 	ys := make([]float64, 0, len(peers))
 	for _, p := range peers {
@@ -28,7 +69,7 @@ func fitBaseline(peers []store.PeerStat) *baseline {
 		ys = append(ys, math.Log(p.ChattersPerK+0.1))
 	}
 	b := &baseline{}
-	if len(xs) < minPeers {
+	if len(xs) < minN {
 		return b
 	}
 	a, slope := ols(xs, ys)
@@ -42,7 +83,7 @@ func fitBaseline(peers []store.PeerStat) *baseline {
 			fy = append(fy, ys[i])
 		}
 	}
-	if len(fx) >= minPeers {
+	if len(fx) >= minN {
 		a, slope = ols(fx, fy)
 		sd = residualSD(fx, fy, a, slope)
 	}

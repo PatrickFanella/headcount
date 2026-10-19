@@ -15,7 +15,7 @@ import (
 
 // Version increments whenever detector logic or weights change, so old
 // scores can be told apart and recomputed.
-const Version = 3
+const Version = 4
 
 const (
 	liveEvery       = 15 * time.Minute
@@ -30,7 +30,7 @@ type Scorer struct {
 	store *store.Store
 	log   *slog.Logger
 
-	baseline    *baseline
+	baseline    *baselines
 	baselineAt  time.Time
 	lastLiveRun time.Time
 }
@@ -54,7 +54,7 @@ func (s *Scorer) Run(ctx context.Context) {
 
 func (s *Scorer) runOnce(ctx context.Context) error {
 	refit := time.Hour
-	if s.baseline == nil || !s.baseline.ok {
+	if !s.baseline.ok() {
 		refit = 10 * time.Minute
 	}
 	if time.Since(s.baselineAt) > refit {
@@ -64,13 +64,14 @@ func (s *Scorer) runOnce(ctx context.Context) error {
 			// Keep the previous baseline and score with it.
 			s.log.Warn("chat baseline", "err", err)
 		} else {
-			s.baseline = fitBaseline(peers)
-			s.log.Info("chat baseline", "streams", len(peers), "ok", s.baseline.ok,
-				"slope", round(s.baseline.slope), "sd", round(s.baseline.sd))
+			s.baseline = fitBaselines(peers)
+			s.log.Info("chat baseline", "streams", len(peers), "ok", s.baseline.ok(),
+				"slope", round(s.baseline.global.slope), "sd", round(s.baseline.global.sd),
+				"languages", len(s.baseline.byLang))
 		}
 	}
 	if s.baseline == nil {
-		s.baseline = &baseline{}
+		s.baseline = &baselines{global: &baseline{}}
 	}
 
 	// The chat collector flushes a minute after it ends; wait a few minutes
@@ -197,11 +198,17 @@ func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
 	}
 	comps["synchronized_spikes"] = sync
 
-	if stats, ok := detect.ChatEngagement(d, p); ok && s.baseline.ok {
-		z := s.baseline.z(stats.MedianViewers, stats.ChattersPerK)
+	if stats, ok := detect.ChatEngagement(d, p); ok && s.baseline.ok() {
+		b, perLang := s.baseline.For(r.Language)
+		z := b.z(stats.MedianViewers, stats.ChattersPerK)
+		langFlag := 0.0
+		if perLang {
+			langFlag = 1
+		}
 		comps["chat_engagement"] = detect.ChatResidualComponent(z, d.RestrictedChat, map[string]float64{
 			"median_viewers": stats.MedianViewers, "chatters_per_k": stats.ChattersPerK,
-			"expected_per_k": s.baseline.expected(stats.MedianViewers), "chat_coverage": stats.ChatCoverage,
+			"expected_per_k": b.expected(stats.MedianViewers), "chat_coverage": stats.ChatCoverage,
+			"language_baseline": langFlag,
 		})
 	} else {
 		comps["chat_engagement"] = detect.Component{Reason: "no chat data or baseline not ready"}

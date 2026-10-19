@@ -9,6 +9,7 @@ import (
 type StreamRef struct {
 	ID          int64
 	ChannelID   int64
+	Language    string
 	StartedAt   time.Time
 	FirstSeenAt time.Time
 	LastSeenAt  time.Time
@@ -19,7 +20,7 @@ type StreamRef struct {
 // whose final score came from an older scoring version.
 func (s *Store) StreamsToScore(ctx context.Context, endedBefore time.Time, version, limit int) ([]StreamRef, error) {
 	return s.streamRefs(ctx, `
-		SELECT s.id, s.channel_id, s.started_at, s.first_seen_at, s.last_seen_at, true FROM streams s
+		SELECT s.id, s.channel_id, coalesce(s.language, ''), s.started_at, s.first_seen_at, s.last_seen_at, true FROM streams s
 		LEFT JOIN stream_scores sc ON sc.stream_id = s.id
 		WHERE s.ended_at IS NOT NULL AND s.ended_at < $1
 		  AND (s.scored_at IS NULL OR sc.version < $2)
@@ -29,7 +30,7 @@ func (s *Store) StreamsToScore(ctx context.Context, endedBefore time.Time, versi
 // LiveStreamsToScore returns open streams observed for at least minMinutes.
 func (s *Store) LiveStreamsToScore(ctx context.Context, minMinutes int) ([]StreamRef, error) {
 	return s.streamRefs(ctx, `
-		SELECT id, channel_id, started_at, first_seen_at, last_seen_at, false FROM streams
+		SELECT id, channel_id, coalesce(language, ''), started_at, first_seen_at, last_seen_at, false FROM streams
 		WHERE ended_at IS NULL AND last_seen_at - first_seen_at >= make_interval(mins => $1)`, minMinutes)
 }
 
@@ -42,7 +43,7 @@ func (s *Store) streamRefs(ctx context.Context, sql string, args ...any) ([]Stre
 	var out []StreamRef
 	for rows.Next() {
 		var r StreamRef
-		if err := rows.Scan(&r.ID, &r.ChannelID, &r.StartedAt, &r.FirstSeenAt, &r.LastSeenAt, &r.Ended); err != nil {
+		if err := rows.Scan(&r.ID, &r.ChannelID, &r.Language, &r.StartedAt, &r.FirstSeenAt, &r.LastSeenAt, &r.Ended); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -165,6 +166,7 @@ func (s *Store) ChatterAccounts(ctx context.Context, streamID int64, startedAt t
 }
 
 type PeerStat struct {
+	Language      string
 	MedianViewers float64
 	ChattersPerK  float64
 }
@@ -173,12 +175,14 @@ type PeerStat struct {
 // 1000 viewers over the recent window, for the engagement baseline.
 func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat, error) {
 	rows, err := s.Pool.Query(ctx, `
-		SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v.viewers),
+		SELECT coalesce(s.language, ''),
+		       percentile_cont(0.5) WITHIN GROUP (ORDER BY v.viewers),
 		       percentile_cont(0.5) WITHIN GROUP (ORDER BY c.unique_chatters::float8 * 1000 / v.viewers)
 		FROM viewer_samples v
 		JOIN chat_minutes c ON c.channel_id = v.channel_id AND c.ts = v.ts
+		JOIN streams s ON s.id = v.stream_id
 		WHERE v.ts > $1 AND v.viewers >= 100
-		GROUP BY v.stream_id
+		GROUP BY v.stream_id, s.language
 		HAVING count(*) >= 30`, since)
 	if err != nil {
 		return nil, err
@@ -187,7 +191,7 @@ func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat,
 	var out []PeerStat
 	for rows.Next() {
 		var p PeerStat
-		if err := rows.Scan(&p.MedianViewers, &p.ChattersPerK); err != nil {
+		if err := rows.Scan(&p.Language, &p.MedianViewers, &p.ChattersPerK); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

@@ -57,3 +57,28 @@ func TestBaselineZ(t *testing.T) {
 		t.Errorf("quiet stream z = %.2f, want < -3", z)
 	}
 }
+
+func TestLanguageBaselines(t *testing.T) {
+	var peers []store.PeerStat
+	for i := range 40 {
+		v := 1000.0 * float64(i+1)
+		lang, scale := "en", 1.0
+		if i%2 == 1 {
+			lang, scale = "ja", 0.2 // a quieter chat culture
+		}
+		perK := 50 * math.Pow(v, -0.3) * scale * (1 + 0.05*float64(i%3-1))
+		peers = append(peers, store.PeerStat{Language: lang, MedianViewers: v, ChattersPerK: perK})
+	}
+	b := fitBaselines(peers)
+	ja, perLang := b.For("ja")
+	if !perLang {
+		t.Fatal("no ja baseline")
+	}
+	quietJA := 50 * math.Pow(20000, -0.3) * 0.2
+	if z := ja.z(20000, quietJA); math.Abs(z) > 1.5 {
+		t.Errorf("typical ja stream z = %.2f against ja baseline", z)
+	}
+	if _, perLang := b.For("de"); perLang {
+		t.Error("de has no peers but got its own baseline")
+	}
+}
