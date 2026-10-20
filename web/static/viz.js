@@ -60,6 +60,12 @@ export function renderEngagementMap(container, data, lang, cat = '') {
     ${fit ? `<span><i style="background:var(--text-muted)"></i>expected for audience size</span>
     <span><i class="band"></i>typical range (±1 and ±2 SD)</span>` : ''}`;
   container.appendChild(legend);
+  if (!fit) {
+    const p = document.createElement('p');
+    p.className = 'muted small';
+    p.textContent = 'Engagement measurements are shown. There are too few usable streams for a reference line in this selection.';
+    container.appendChild(p);
+  }
   if (fitNote) {
     const p = document.createElement('p');
     p.className = 'muted small';
@@ -169,6 +175,7 @@ export function renderEngagementMap(container, data, lang, cat = '') {
       ${tipRow('transparent', 'Median viewers', n(p.median_viewers))}
       ${tipRow('transparent', 'Chatters per 1k viewers', dec(p.chatters_per_k))}
       ${p.expected_per_k != null ? tipRow('transparent', 'Expected per 1k (scorer)', dec(p.expected_per_k)) : ''}
+      ${p.expected_per_k == null ? '<div class="muted small">Scorer comparison unavailable: insufficient independent past peers.</div>' : ''}
       ${p.z != null ? tipRow('transparent', 'Distance from expected', `${dec(p.z)} SD`) : ''}
       ${tipRow('transparent', `Quotient${p.final ? '' : ' (provisional)'}`, `${q(p.quotient)} · ${pct(p.confidence)} coverage`)}
       <div class="muted small">${esc(p.language || 'unknown language')} · click to open</div>`);

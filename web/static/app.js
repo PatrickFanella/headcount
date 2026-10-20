@@ -426,8 +426,8 @@ async function engagementView() {
   const langName = (l) => { try { return names.of(l); } catch { return l; } };
   app.innerHTML = `
     <h1>Engagement map</h1>
-    <p class="sub">Every recently scored stream, placed by audience size and how many of those viewers chat. Bigger streams
-      have proportionally quieter chat, so the grey line shows what is typical for each size. Streams far below the band have
+    <p class="sub">Recently scored streams with usable chat measurements, placed by audience size and how many of those viewers chat.
+      When enough measurements are available, the grey line summarizes engagement at each audience size. Streams far below the band have
       a big audience but a quiet chat, which is what bot viewers produce. That is a signal, not proof: chat can also be quiet
       because of restricted chat, a non-chatty audience, or embedded and muted players.</p>
     <div class="filters" role="group" aria-label="Filters">
@@ -443,10 +443,10 @@ async function engagementView() {
       ${data.truncated ? `<span class="muted small">showing the latest ${n(data.limit)} streams</span>` : ''}
     </div>
     <div class="card" id="em"></div>
-    <p class="caption">The line is refitted here from the streams shown, the same way the scorer fits its baseline (log-log, outliers
-      removed). Pick a category to compare streams only with others in it; it gets its own line when it has enough streams. The
-      scorer itself uses the language line adjusted for the stream’s category and similar categories. Hover a point for the scorer’s own expected
-      value and its distance from it in standard deviations (SD); click to open the stream.</p>`;
+    <p class="caption">The reference line describes measurements in this window (log-log, outliers removed). It is separate from the scorer’s
+      comparison with independent past streams. Pick a category to narrow the map. Hover a point for the scorer’s expected
+      value and distance in standard deviations (SD), when available; click to open the stream. Measurements remain visible
+      while independent past peers are still accumulating.</p>`;
   const box = document.getElementById('em');
   const langSel = document.getElementById('em-lang');
   const catSel = document.getElementById('em-cat');
