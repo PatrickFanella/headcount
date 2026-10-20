@@ -33,3 +33,7 @@ Completed on the new branch. No production deployment performed.
 The workstation's inherited GOROOT points one directory above Homebrew's libexec. Checks used command-local `GOROOT=/opt/homebrew/opt/go/libexec`; host configuration was not changed. Test database/container and temporary UI harness are removed at handoff.
 
 The research CLI supports whole observed-stream episode labels. Finer account-cohort episodes cannot be reconstructed from existing per-stream summaries. Circular-shift and cohort comparisons remain diagnostics rather than newly weighted detectors. Isotonic calibration is an offline candidate with independent-test checks; no model is promoted to live scoring without reviewed evidence.
+
+## Owner-nominated controls follow-up
+
+Added a versioned creator roster with verified public Twitch IDs, unresolved-handle tracking, and a `control-cases` command. Nominations produce unreviewed challenge cases and cannot change a score or supply a class label. Nomination metadata is excluded from blinded packets. Regression tests cover those boundaries.

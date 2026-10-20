@@ -40,6 +40,20 @@ Use `-at RFC3339Nano` on export to select an exact stored observation rather tha
 
 Use the blinded packet for reviewers. It excludes the original quotient, detector strengths and score-derived shared-account result. Do not show reviewers scored exports, public rankings or the case-selection rationale before their first review.
 
+## Owner-nominated reference channels
+
+The [control roster](research-controls.json) records HasanAbi, MapleTakes, willneff and carolinekwan as owner-nominated reference creators, with identities checked through Twitch's user endpoint. The supplied `central_commmittee` handle did not resolve; `central_committee` is recorded as a possible correction pending owner confirmation. Identity lookup confirms an account exists, not that its traffic is authentic.
+
+A trusted creator is a useful starting point for finding ordinary episodes. Third parties can direct bots at an unwilling creator, as [Twitch describes](https://blog.twitch.tv/en/2016/06/17/on-artificial-viewers-followers-and-chat-activity-317906f1c7ea/). The roster supplies no automatic negative label, score exemption or special weight. Review normal broadcasts and annotated raids, collaborations, restricted-chat periods and promotions independently of the quotient. Leave unexplained traffic indeterminate. Similar audiences and joint events can produce legitimate overlap.
+
+```sh
+/tmp/headcount-research control-cases -pool research_exports/pool -controls docs/research-controls.json -out research_exports/control-cases.json
+```
+
+This command selects one latest available snapshot per stream for resolved channel IDs and creates unreviewed challenge cases. It does not begin collection or contact Twitch. Add resolved logins to the existing `SEED_LOGINS` configuration when collecting below the discovery threshold; deployment and seed changes are separate operational actions. Export snapshots using the normal workflow. Nomination metadata stays out of blinded review packets, and two independent episode reviews are still required.
+
+Use these cases to inspect false positives and test whether known ordinary events receive sensible explanations. Expand the representative sample across audience sizes, languages and categories. Keep related campaigns and channels out of other evaluation partitions. Independently supported positive incidents are also needed to estimate missed detection; low scores or familiar creators cannot establish that metric. Never derive ground-truth labels from the score being evaluated. Individual video-viewer identities and playback sessions remain unavailable through public data, so Headcount does not certify individual viewers as human.
+
 ## Representative sampling and labels
 
 ```sh

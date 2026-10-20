@@ -23,16 +23,17 @@ type Review struct {
 	Notes    string            `json:"notes"`
 }
 type Case struct {
-	ID                   string         `json:"id"`
-	Input                score.Snapshot `json:"input"`
-	Digest               string         `json:"input_sha256"`
-	Split                string         `json:"split"`
-	Campaign             string         `json:"campaign,omitempty"`
-	Stratum              string         `json:"stratum"`
-	InclusionProbability float64        `json:"inclusion_probability"`
-	Challenge            bool           `json:"challenge"`
-	Reviews              []Review       `json:"reviews"`
-	Adjudication         *Review        `json:"adjudication,omitempty"`
+	Nomination           *ControlNomination `json:"nomination,omitempty"`
+	ID                   string             `json:"id"`
+	Input                score.Snapshot     `json:"input"`
+	Digest               string             `json:"input_sha256"`
+	Split                string             `json:"split"`
+	Campaign             string             `json:"campaign,omitempty"`
+	Stratum              string             `json:"stratum"`
+	InclusionProbability float64            `json:"inclusion_probability"`
+	Challenge            bool               `json:"challenge"`
+	Reviews              []Review           `json:"reviews"`
+	Adjudication         *Review            `json:"adjudication,omitempty"`
 }
 
 // BlindCase omits all scorer outputs and score-derived shared-account evidence.

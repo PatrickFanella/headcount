@@ -33,11 +33,12 @@ func readJSON(path string, v any) error {
 }
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: research export|replay|review|case|sample|evaluate|calibrate|probability-evaluate|persistence|record-context [flags]")
+		return errors.New("usage: research export|replay|review|case|sample|control-cases|evaluate|calibrate|probability-evaluate|persistence|record-context [flags]")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	in := f.String("in", "", "input packet, case list, or calibration artifact")
 	out := f.String("out", "", "new private output file (never overwritten)")
+	controls := f.String("controls", "docs/research-controls.json", "owner-nominated control roster")
 	pool := f.String("pool", "", "directory of exported snapshot packets")
 	stream := f.String("stream", "", "stream ID to export")
 	at := f.String("at", "", "exact snapshot time (RFC3339Nano); default latest")
@@ -162,6 +163,19 @@ func run(args []string) error {
 			result = research.Blind(p)
 		case "case":
 			result = []research.Case{{ID: p.Digest, Input: p.Input, Digest: p.Digest, Split: "development", Stratum: "challenge", Challenge: true, InclusionProbability: 1, Reviews: []research.Review{}}}
+		}
+	case "control-cases":
+		ps, err := readPool(*pool)
+		if err != nil {
+			return err
+		}
+		var roster research.ControlRoster
+		if err := readJSON(*controls, &roster); err != nil {
+			return err
+		}
+		result, err = research.ControlCases(ps, roster)
+		if err != nil {
+			return err
 		}
 	case "sample":
 		ps, err := readPool(*pool)
