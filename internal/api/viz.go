@@ -49,19 +49,22 @@ func (s *Server) engagement(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	// stream_scores_recent_idx bounds the scan to the window.
+	// Measurements are saved with the score even when independent past peers
+	// are insufficient for a residual. Keep those points on the descriptive map.
 	rows, err := s.db.Query(ctx, `
 		SELECT sc.stream_id::text, c.login, c.display_name, coalesce(st.language, ''), st.game_name, st.started_at,
 		       sc.quotient, sc.confidence, sc.final,
-		       (sc.components #>> '{chat_engagement,values,median_viewers}')::float8,
-		       (sc.components #>> '{chat_engagement,values,chatters_per_k}')::float8,
+		       coalesce(pm.median_viewers, (sc.components #>> '{chat_engagement,values,median_viewers}')::float8),
+		       coalesce(pm.chatters_per_k, (sc.components #>> '{chat_engagement,values,chatters_per_k}')::float8),
 		       (sc.components #>> '{chat_engagement,values,expected_per_k}')::float8,
 		       (sc.components #>> '{chat_engagement,values,z}')::float8,
 		       coalesce((sc.components #>> '{chat_engagement,strength}')::float8, 0)
 		FROM stream_scores sc
 		JOIN streams st ON st.id = sc.stream_id
 		JOIN channels c ON c.id = sc.channel_id
+		LEFT JOIN stream_peer_metrics pm ON pm.stream_id = sc.stream_id AND pm.metric_version = 1
 		WHERE sc.scored_at > now() - make_interval(days => $1)
-		  AND sc.components #> '{chat_engagement,values}' ? 'median_viewers'
+		  AND (pm.stream_id IS NOT NULL OR sc.components #> '{chat_engagement,values}' ? 'median_viewers')
 		ORDER BY sc.scored_at DESC
 		LIMIT $2`, days, engagementLimit)
 	if err != nil {
