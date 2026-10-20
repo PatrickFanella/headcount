@@ -275,14 +275,14 @@ func (s *Server) streamAccountAges(w http.ResponseWriter, r *http.Request) {
 
 // accountAgeHistogram buckets the creation dates of a stream's chatters by
 // month (all time) and by week (the year before the stream), and counts
-// suspended/deleted and not-yet-looked-up accounts. It reads per-chatter
+// unavailable and not-yet-looked-up accounts. It reads per-chatter
 // rows from stream_chatters, so it returns an empty histogram once those rows
 // have been pruned for an old stream.
 func (s *Server) accountAgeHistogram(ctx context.Context, streamID int64) (json.RawMessage, error) {
 	// Streams past chatter retention keep only a summary: monthly counts, no weeks.
 	summary, err := s.queryJSON(ctx, `
 		SELECT json_build_object(
-			'started_at', st.started_at, 'chatters', x.total, 'known', x.total, 'missing', x.missing,
+			'started_at', st.started_at, 'chatters', x.total, 'known',x.resolved,'missing',x.missing,'pending',x.pending,'coverage_known',x.coverage_known,
 			'months', (SELECT coalesce(json_agg(json_build_array(k, v::int) ORDER BY k), '[]')
 			           FROM jsonb_each_text(x.created_months) AS m(k, v)),
 			'weeks', '[]'::json, 'summarized', true)
@@ -297,7 +297,7 @@ func (s *Server) accountAgeHistogram(ctx context.Context, streamID int64) (json.
 	return s.queryJSON(ctx, `
 		WITH st AS (SELECT started_at FROM streams WHERE id = $1),
 		u AS MATERIALIZED (
-			SELECT u.id IS NOT NULL AS known, coalesce(u.missing, false) AS missing, u.created_at
+			SELECT u.created_at IS NOT NULL AS known, coalesce(u.missing, false) AS missing, u.created_at
 			FROM stream_chatters sc LEFT JOIN twitch_users u ON u.id = sc.user_id
 			WHERE sc.stream_id = $1
 		)
@@ -308,10 +308,10 @@ func (s *Server) accountAgeHistogram(ctx context.Context, streamID int64) (json.
 			'missing', (SELECT count(*) FILTER (WHERE missing) FROM u),
 			'months', (SELECT coalesce(json_agg(json_build_array(to_char(m AT TIME ZONE 'UTC', 'YYYY-MM'), n) ORDER BY m), '[]') FROM (
 				SELECT date_trunc('month', created_at, 'UTC') m, count(*) n FROM u
-				WHERE created_at IS NOT NULL AND NOT missing GROUP BY 1) x),
+				WHERE created_at IS NOT NULL GROUP BY 1) x),
 			'weeks', (SELECT coalesce(json_agg(json_build_array(to_char(wk AT TIME ZONE 'UTC', 'YYYY-MM-DD'), n) ORDER BY wk), '[]') FROM (
 				SELECT date_trunc('week', created_at, 'UTC') wk, count(*) n FROM u, st
-				WHERE created_at IS NOT NULL AND NOT missing AND created_at > st.started_at - interval '364 days'
+				WHERE created_at IS NOT NULL AND created_at > st.started_at - interval '364 days'
 				GROUP BY 1) x)
 		)
 		WHERE EXISTS (SELECT 1 FROM st)`, streamID)

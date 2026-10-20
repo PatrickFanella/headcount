@@ -230,7 +230,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				'display_name', c.display_name, 'started_at', st.started_at, 'first_seen_at', st.first_seen_at,
 				'last_seen_at', st.last_seen_at, 'ended_at', st.ended_at, 'title', st.title, 'game_name', st.game_name,
 				'peak_viewers', st.peak_viewers) FROM st JOIN channels c ON c.id = st.channel_id),
-			'score', (SELECT row_to_json(x) FROM (SELECT quotient, confidence, final, minutes, version, scored_at, components
+			'score', (SELECT row_to_json(x) FROM (SELECT quotient, confidence,confidence AS coverage, final, minutes, version, scored_at, components,evidence
 				FROM stream_scores WHERE stream_id = $1) x),
 			'viewers', (SELECT coalesce(json_agg(json_build_array(extract(epoch FROM v.ts)::bigint, v.viewers) ORDER BY v.ts), '[]')
 				FROM viewer_samples v, st WHERE v.channel_id = st.channel_id AND v.stream_id = st.id
@@ -242,12 +242,14 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				FROM follower_samples f, st WHERE f.channel_id = st.channel_id
 				AND f.ts BETWEEN st.first_seen_at - interval '5 minutes' AND st.last_seen_at),
 			'events', (SELECT coalesce(json_agg(json_build_object('ts', e.ts, 'kind', e.kind, 'detail', e.detail) ORDER BY e.ts), '[]')
-				FROM channel_events e, st WHERE e.channel_id = st.channel_id AND e.kind IN ('raid_in', 'game_change', 'title_change', 'chat_mode')
+				FROM channel_events e, st WHERE e.channel_id = st.channel_id AND e.kind IN ('raid_in', 'game_change', 'title_change', 'chat_mode','chat_settings','shared_chat','distribution_context')
 				AND e.ts BETWEEN st.first_seen_at AND st.last_seen_at + interval '1 minute'),
-			'accounts', (SELECT json_build_object('chatters', count(*),
-				'known', count(u.id), 'new_30d', count(*) FILTER (WHERE u.created_at > (SELECT started_at FROM st) - interval '30 days'),
+			'accounts', CASE WHEN EXISTS(SELECT 1 FROM stream_chatter_summary WHERE stream_id=$1) THEN
+ (SELECT json_build_object('chatters',total,'known',resolved,'new_30d',new_accounts,'missing',missing,'pending',pending,'coverage_known',coverage_known,'summarized',true) FROM stream_chatter_summary WHERE stream_id=$1)
+ ELSE (SELECT json_build_object('chatters', count(*),
+				'known', count(*) FILTER(WHERE u.created_at IS NOT NULL),'cached',count(u.id),'coverage_known',true,'pending',count(*) FILTER(WHERE u.id IS NULL), 'new_30d', count(*) FILTER (WHERE u.created_at > (SELECT started_at FROM st) - interval '30 days' AND u.created_at <=(SELECT last_seen_at FROM st)),
 				'missing', count(*) FILTER (WHERE u.missing))
-				FROM stream_chatters sc LEFT JOIN twitch_users u ON u.id = sc.user_id WHERE sc.stream_id = $1)
+				FROM stream_chatters sc LEFT JOIN twitch_users u ON u.id = sc.user_id WHERE sc.stream_id = $1) END
 		)
 		WHERE EXISTS (SELECT 1 FROM st)`, id)
 	if err != nil {

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "source": "Owner nominated these creators as genuine on 2026-10-20. This is trust in the creators; individual stream traffic has not been reviewed.",
+  "identity_source": "Twitch Helix Get Users; account identities only, not traffic authenticity",
+  "identity_checked_on": "2026-10-20",
+  "candidates": [
+    {"login": "hasanabi", "channel_id": 207813352, "status": "nominated"},
+    {"login": "mapletakes", "channel_id": 839473171, "status": "nominated"},
+    {"login": "central_committee", "requested_login": "central_commmittee", "channel_id": 109118789, "status": "nominated"},
+    {"login": "willneff", "channel_id": 122888997, "status": "nominated"},
+    {"login": "carolinekwan", "channel_id": 471218475, "status": "nominated"}
+  ]
+}

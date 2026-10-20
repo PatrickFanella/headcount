@@ -96,7 +96,14 @@ func main() {
 		}
 	}
 	collector := chat.New(ls, st, h, log.With("component", "chat"))
+	collector.UtilityIDs = map[int64]bool{}
+	for _, raw := range strings.Split(os.Getenv("UTILITY_BOT_IDS"), ",") {
+		if id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err == nil && id > 0 {
+			collector.UtilityIDs[id] = true
+		}
+	}
 	scorer := score.New(st, log.With("component", "score"))
+	scorer.ReplayRetention = time.Duration(envInt("REPLAY_RETENTION_DAYS", 7)) * 24 * time.Hour
 	scorer.ChatterRetention = time.Duration(envInt("CHATTER_RETENTION_DAYS", 30)) * 24 * time.Hour
 
 	go poller.Run(ctx)

@@ -54,7 +54,7 @@ func binomTail(n, k int, p float64) float64 {
 // is reduced.
 func Synchrony(own []int64, partners []Partner, tol int) Component {
 	if len(own) < 4 {
-		return Component{Reason: "fewer than 4 spikes", Available: true, Values: map[string]float64{"own_onsets": float64(len(own))}}
+		return Component{Reason: "fewer than 4 eligible spikes", Available: false, Values: map[string]float64{"own_onsets": float64(len(own))}}
 	}
 	tested := 0
 	bestP := 1.0
@@ -85,7 +85,7 @@ func Synchrony(own []int64, partners []Partner, tol int) Component {
 	}
 	values := map[string]float64{"own_onsets": float64(len(own)), "partners_tested": float64(tested)}
 	if tested == 0 {
-		return Component{Available: true, Values: values}
+		return Component{Reason: "no eligible observed partners", Values: values}
 	}
 	adj := func(p float64) float64 { return math.Min(1, p*float64(tested)) }
 	significant := 0
@@ -112,4 +112,51 @@ func Synchrony(own []int64, partners []Partner, tol int) Component {
 		c.Reason = "best partner: " + bestLogin
 	}
 	return c
+}
+
+// CircularMatchP is a shadow diagnostic, not a calibrated significance test.
+// It preserves onset spacing under circular shifts but cannot preserve unknown
+// partner collection gaps or all common events. Values are deliberately kept
+// out of live scoring until a prospective replay study validates a null model.
+func CircularMatchP(own []int64, partners []Partner, from, to int64, tol int) float64 {
+	if to-from < 60 || len(own) < 4 {
+		return 1
+	}
+	best := 1.0
+	tested := 0
+	matches := func(other []int64) int {
+		n := 0
+		for _, a := range own {
+			for _, b := range other {
+				if a >= from && a < to && b >= from && b < to && a-b >= -int64(tol) && a-b <= int64(tol) {
+					n++
+					break
+				}
+			}
+		}
+		return n
+	}
+	for _, p := range partners {
+		if p.OverlapMinutes < int(to-from) || len(p.Onsets) < 3 {
+			continue
+		}
+		tested++
+		observed := matches(p.Onsets)
+		ge, total := 1, 1
+		step := max(int64(1), (to-from)/199)
+		for offset := step; offset < to-from; offset += step {
+			shifted := make([]int64, 0, len(p.Onsets))
+			for _, t := range p.Onsets {
+				if t >= from && t < to {
+					shifted = append(shifted, from+(t-from+offset)%(to-from))
+				}
+			}
+			if matches(shifted) >= observed {
+				ge++
+			}
+			total++
+		}
+		best = math.Min(best, float64(ge)/float64(total))
+	}
+	return math.Min(1, best*float64(max(1, tested)))
 }

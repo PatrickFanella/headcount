@@ -237,7 +237,7 @@ func (s *Server) channelPage(ctx context.Context, r *http.Request) (page, error)
 	}
 	var facts []string
 	if quotient != nil && conf != nil && *conf >= 0.1 {
-		facts = append(facts, fmt.Sprintf("sus quotient %d of 100 from %s (%d%% confidence)",
+		facts = append(facts, fmt.Sprintf("sus quotient %d of 100 from %s (%d%% coverage)",
 			int(math.Round(*quotient)), plural(scored, "scored stream"), int(math.Round(*conf*100))))
 	} else {
 		facts = append(facts, "not scored yet")
@@ -288,7 +288,7 @@ func (s *Server) streamPage(ctx context.Context, r *http.Request) (page, error) 
 		if final != nil && !*final {
 			kind = "Provisional sus quotient"
 		}
-		desc += fmt.Sprintf("%s %d of 100 (%d%% confidence). ", kind, int(math.Round(*quotient)), int(math.Round(*conf*100)))
+		desc += fmt.Sprintf("%s %d of 100 (%d%% coverage). ", kind, int(math.Round(*quotient)), int(math.Round(*conf*100)))
 	}
 	desc += "Viewers, chat and follows minute by minute."
 	p := "/stream/" + strconv.FormatInt(id, 10)
@@ -325,7 +325,7 @@ var (
 	aboutPage = page{
 		Title: title("How the sus quotient works"), Path: "/about",
 		Description: "How Headcount scores Twitch streams for view-bot, follow-bot and chat-bot patterns: the twelve " +
-			"detectors, their weights, confidence, and the limits of the method.",
+			"detectors, their weights, observation coverage, and the limits of the method.",
 		H1: "How scoring works",
 		Intro: "Every channel that reaches the Twitch top 200 is tracked from then on. Each minute the collector records its " +
 			"viewer count, its chat activity and its follower total. When a stream ends, detectors each rate one kind of " +

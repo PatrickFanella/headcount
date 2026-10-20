@@ -367,8 +367,8 @@ func (c *Client) UsersByLogin(ctx context.Context, logins []string) ([]User, err
 	return r.Data, nil
 }
 
-// Users looks up at most 100 users by ID. Suspended or deleted accounts are
-// omitted from the response.
+// Users looks up at most 100 users by ID. Omitted IDs have unknown
+// availability; the response does not identify an omission reason.
 func (c *Client) Users(ctx context.Context, ids []string) ([]User, error) {
 	if len(ids) > 100 {
 		return nil, fmt.Errorf("users: %d ids, max 100", len(ids))

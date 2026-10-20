@@ -122,8 +122,8 @@ export function caption(text) {
 }
 
 // Minute-grid preparation that mirrors detect.Prepare: samples are placed on
-// a one-minute grid from the first sample, repeated Helix values are treated
-// as missing, gaps are interpolated linearly, the baseline is a 31-minute
+// a one-minute grid from the first sample, preserving repeated observations
+// and missing polls. The baseline is a 31-minute
 // rolling median, and rel = (viewers - baseline) / baseline.
 export function prepareMinutes(points) {
   if (!points.length) return null;
@@ -135,26 +135,10 @@ export function prepareMinutes(points) {
     if (i >= 0 && i < len) raw[i] = v;
   }
   const covered = raw.filter((x) => !Number.isNaN(x)).length / len;
-  const held = raw.slice();
-  let last = NaN;
-  for (let i = 0; i < raw.length; i++) {
-    if (Number.isNaN(raw[i])) continue;
-    if (raw[i] === last) held[i] = NaN;
-    last = raw[i];
-  }
-  const v = held.slice();
-  let prev = -1;
-  for (let i = 0; i < held.length; i++) {
-    if (Number.isNaN(held[i])) continue;
-    if (prev === -1) for (let j = 0; j < i; j++) v[j] = held[i];
-    else for (let j = prev + 1; j < i; j++) v[j] = held[prev] + ((j - prev) / (i - prev)) * (held[i] - held[prev]);
-    prev = i;
-  }
-  if (prev === -1) return null;
-  for (let j = prev + 1; j < len; j++) v[j] = held[prev];
+  const v = raw.slice();
   const base = new Array(len);
   for (let i = 0; i < len; i++) {
-    const w = v.slice(Math.max(0, i - 15), i + 16).sort((a, b) => a - b);
+    const w = v.slice(Math.max(0, i - 15), i + 16).filter(Number.isFinite).sort((a, b) => a - b);
     const m = w.length;
     base[i] = m % 2 ? w[(m - 1) / 2] : (w[m / 2 - 1] + w[m / 2]) / 2;
   }
@@ -166,12 +150,15 @@ export function prepareMinutes(points) {
 export function autocorrelation(v, lag) {
   const len = v.length;
   if (lag >= len) return 0;
-  const m = v.reduce((a, b) => a + b, 0) / len;
+  const finite = v.filter(Number.isFinite);
+  if (!finite.length) return 0;
+  const m = finite.reduce((a, b) => a + b, 0) / finite.length;
   let num = 0, den = 0;
   for (let i = 0; i < len; i++) {
     const d = v[i] - m;
+    if (!Number.isFinite(d)) continue;
     den += d * d;
-    if (i + lag < len) num += d * (v[i + lag] - m);
+    if (i + lag < len && Number.isFinite(v[i + lag])) num += d * (v[i + lag] - m);
   }
   return den ? num / den : 0;
 }

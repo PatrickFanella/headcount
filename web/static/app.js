@@ -8,24 +8,19 @@ const app = document.getElementById('app');
 
 const COMPONENTS = {
   periodic_spikes: ['Periodic spikes', 'Viewer spikes that repeat at a fixed interval and return to the same baseline'],
-  synchronized_spikes: ['Synchronized spikes', 'Viewer spikes that start in the same minutes as another channel’s, beyond chance'],
-  spike_chat_lift: ['Chat during spikes', 'Whether chat grows when viewers spike, compared with the minutes just before each spike; bot viewers do not chat'],
+  synchronized_spikes: ['Synchronized spikes', 'Viewer spikes that start in the same minutes as another channel’s, under a heuristic timing model'],
+  spike_chat_lift: ['Chat during spikes', 'Whether chat grows when viewers spike, compared with the minutes just before each spike; passive viewers may also stay quiet'],
   chat_engagement: ['Chat engagement', 'Chatters per 1,000 viewers compared with streams of the same size, language and category'],
-  follower_purge: ['Follower purges', 'Large follower drops, as when Twitch removes fake follows'],
-  chatter_accounts: ['Chatter accounts', 'Share of chatters with accounts under 30 days old, or suspended/deleted'],
-  shared_accounts: ['Shared accounts', 'Chatters with accounts under 90 days old, or suspended, who also chatted in two or more other tracked channels that week'],
-  follow_bursts: ['Follow bursts', 'Minutes with far more follows than the stream’s normal rate'],
+  follower_purge: ['Follower net losses', 'Large net follower losses; the cause and individual events are unknown'],
+  chatter_accounts: ['Chatter accounts', 'Share of resolved creation dates under 30 days old; unavailable lookups are not suspicion evidence'],
+  shared_accounts: ['Shared accounts', 'Chatters with accounts under 90 days old who also chatted in two or more other tracked channels that week'],
+  follow_bursts: ['Follow bursts', 'Observed net-change intervals far above the stream’s usual follow rate'],
   unexplained_jumps: ['Unexplained jumps', 'Sharp viewer changes not explained by a raid or game change'],
   spike_follow_lift: ['Follows during spikes', 'Whether follows speed up when viewers spike'],
-  chat_repetition: ['Chat repetition', 'Share of chat that is one repeated message'],
+  chat_repetition: ['Chat repetition', 'Share of messages matching the top repeated non-command, non-utility text'],
   start_ramp: ['Start ramp', 'How fast viewers arrive after going live'],
 };
-const FAMILIES = {
-  periodic_spikes: 'viewer_shape', synchronized_spikes: 'viewer_shape', unexplained_jumps: 'viewer_shape', start_ramp: 'viewer_shape',
-  spike_chat_lift: 'spike_response', spike_follow_lift: 'spike_response',
-  chat_engagement: 'chat', chat_repetition: 'chat', chatter_accounts: 'accounts', shared_accounts: 'accounts',
-  follow_bursts: 'follows', follower_purge: 'follows',
-};
+
 const WEIGHTS = {
   periodic_spikes: 0.6, synchronized_spikes: 0.5, spike_chat_lift: 0.5, chat_engagement: 0.5, follower_purge: 0.4, chatter_accounts: 0.4, shared_accounts: 0.4,
   follow_bursts: 0.3, unexplained_jumps: 0.3, spike_follow_lift: 0.25, chat_repetition: 0.15, start_ramp: 0.1,
@@ -37,7 +32,7 @@ function meter(value, confidence) {
   if (value == null) return '<span class="muted">not scored</span>';
   if (confidence != null && confidence < 0.1) return '<span class="muted">too little data</span>';
   const low = confidence != null && confidence < 0.4;
-  return `<span class="meter${low ? ' low-conf' : ''}" title="confidence ${pct(confidence)}">
+  return `<span class="meter${low ? ' low-conf' : ''}" title="observation coverage ${pct(confidence)}; not detection accuracy">
     <span class="track"><span class="fill" style="display:block;width:${Math.max(2, value)}%"></span></span>
     <span class="num">${q(value)}</span></span>`;
 }
@@ -391,7 +386,7 @@ async function channelView(login) {
       · <a href="https://twitch.tv/${encodeURIComponent(c.login)}" target="_blank" rel="noopener">twitch.tv/${esc(c.login)}</a></p>
     <div class="tiles">
       <div class="tile"><div class="v num">${q(c.quotient)}</div><div class="l">channel quotient</div></div>
-      <div class="tile"><div class="v num">${pct(c.quotient_confidence)}</div><div class="l">confidence</div></div>
+      <div class="tile"><div class="v num">${pct(c.quotient_confidence)}</div><div class="l">observation coverage</div></div>
       <div class="tile"><div class="v num">${streams.length}</div><div class="l">streams recorded</div></div>
     </div>
     <p class="basis">${basis}</p>
@@ -467,25 +462,12 @@ async function engagementView() {
 
 // ---------- stream ----------
 
-// Mirrors the Go detectors: drop repeated Helix values, interpolate, then a
-// 31-minute rolling median as the baseline.
+// Display the observed count and its minute-based rolling median.
 function baselineOf(points) {
-  const v = points.map((p) => p[1]);
-  const held = v.map((x, i) => (i > 0 && x === v[i - 1] ? null : x));
-  const interp = held.slice();
-  let prev = -1;
-  for (let i = 0; i < held.length; i++) {
-    if (held[i] == null) continue;
-    if (prev >= 0 && i - prev > 1) for (let j = prev + 1; j < i; j++) interp[j] = held[prev] + ((j - prev) / (i - prev)) * (held[i] - held[prev]);
-    prev = i;
-  }
-  for (let j = prev + 1; j < interp.length; j++) interp[j] = held[prev];
-  const out = [];
-  for (let i = 0; i < interp.length; i++) {
-    const w = interp.slice(Math.max(0, i - 15), i + 16).filter((x) => x != null).sort((a, b) => a - b);
-    out.push([points[i][0], w.length ? w[Math.floor(w.length / 2)] : null]);
-  }
-  return { smooth: points.map((p, i) => [p[0], interp[i]]), baseline: out };
+  const p = prepareMinutes(points);
+  if (!p) return { smooth: [], baseline: [] };
+  const tuples = (xs) => xs.map((v, i) => [p.start + 60 * i, Number.isFinite(v) ? v : null]);
+  return { smooth: tuples(p.viewers), baseline: tuples(p.baseline) };
 }
 
 function followDeltas(totals) {
@@ -520,8 +502,8 @@ async function streamView(id) {
     <p class="sub">${esc(s.game_name ?? '')} · ${dateTime(s.started_at)} – ${s.ended_at ? time(s.ended_at) : 'live'}
       ${s.first_seen_at && new Date(s.first_seen_at) - new Date(s.started_at) > 300000 ? `· recording began ${time(s.first_seen_at)}` : ''}</p>
     <div class="tiles">
-      <div class="tile"><div class="v num">${score ? q(score.quotient) : '–'}</div><div class="l">sus quotient${score && !score.final ? ' (provisional)' : ''}</div></div>
-      <div class="tile"><div class="v num">${score ? pct(score.confidence) : '–'}</div><div class="l">confidence</div></div>
+      <div class="tile"><div class="v num">${score && score.evidence?.status !== 'insufficient_evidence' ? q(score.quotient) : '–'}</div><div class="l">sus quotient${score && !score.final ? ' (provisional)' : ''}</div></div>
+      <div class="tile"><div class="v num">${score ? pct(score.confidence) : '–'}</div><div class="l">observation coverage</div></div>
       <div class="tile"><div class="v num">${n(avg)}</div><div class="l">avg viewers</div></div>
       <div class="tile"><div class="v num">${n(s.peak_viewers)}</div><div class="l">peak viewers</div></div>
       <div class="tile"><div class="v num">${gained != null ? n(gained) : '–'}</div><div class="l">followers gained</div></div>
@@ -535,9 +517,9 @@ async function streamView(id) {
     <h2>Score breakdown</h2>
     <div class="card" id="components"></div>
     <h2>Chatter accounts</h2>
-    <div class="card">${acc.known ? `<p class="stats-line">${n(acc.known)} of ${n(acc.chatters)} chatters looked up ·
-      <b class="num">${pct(acc.new_30d / acc.known)}</b> created in the 30 days before the stream ·
-      <b class="num">${pct(acc.missing / acc.known)}</b> suspended or deleted</p>` : ''}<div id="ages"></div></div>`;
+    <div class="card">${acc.coverage_known === false ? `<p class="muted">Legacy summary: the original author denominator is unknown.</p>` : acc.chatters ? `<p class="stats-line">${n(acc.known)} of ${n(acc.chatters)} authors with known creation dates ·
+      <b class="num">${pct(acc.known ? acc.new_30d / acc.known : null)}</b> created within the stream’s 30-day lookback ·
+      <b class="num">${pct(acc.chatters ? acc.missing / acc.chatters : null)}</b> unavailable at last lookup (reason unknown)</p>` : ''}<div id="ages"></div></div>`;
 
   renderCharts(document.getElementById('charts'), {
     viewers: d.viewers, smooth, baseline, chatters, follows,
@@ -560,21 +542,22 @@ function renderComponents(el, score) {
     const ca = comps[a] || {}, cb = comps[b] || {};
     return (cb.available ? cb.strength * WEIGHTS[b] : -1) - (ca.available ? ca.strength * WEIGHTS[a] : -1);
   });
-  // Mirrors detect.Combine: evidence combines within a family, and each family counts at most
-  // 0.3 plus the strongest other family.
-  const fam = {};
-  for (const k of keys) {
-    if (comps[k]?.available) fam[FAMILIES[k]] = (fam[FAMILIES[k]] ?? 1) * (1 - WEIGHTS[k] * comps[k].strength);
-  }
+  const evidence = score.evidence || {};
+  const labels = { audience: 'Audience anomalies', chat: 'Chat patterns', follows: 'Follow patterns' };
+  const mechanisms = evidence.mechanisms || {};
   let capNote = '';
-  if ((score.version || 0) >= 8) {
-    const combined = Object.entries(fam).map(([f, keep]) => [f, 1 - keep]).sort((a, b) => b[1] - a[1]);
-    const [top, other] = [combined[0], combined[1]];
-    const limit = 0.3 + (other ? other[1] : 0);
-    if (top && top[1] > limit + 1e-9) {
-      capNote = `<p class="muted">Only one kind of evidence found much here, so it counts for at most ${Math.round(100 * limit)}
-        points instead of ${Math.round(100 * top[1])}. A higher quotient needs a different kind of evidence to agree.</p>`;
-    }
+  if (score.version >= 9) {
+    capNote = `<p><b>${evidence.status === 'insufficient_evidence' ? 'Insufficient evidence' : 'Uncalibrated anomaly index'}</b> ·
+      This score is not a probability, fake-viewer percentage, or attribution.</p>
+      <p class="stats-line">${Object.entries(mechanisms).map(([k, m]) => `${esc(labels[k] || k)}: ${m.available ? q(m.evidence * 100) + '/100 evidence index' : 'insufficient data'}`).join(' · ')}</p>
+      <p class="muted">Viewer shape, low engagement and spike response share one cause group. Each group contributes its strongest weighted detector;
+      one group alone is capped at 30 points. Separate groups may still share a cause.</p>`;
+    const quality = evidence.quality || {};
+    capNote += `<p class="stats-line">${n(quality.observed_viewer_minutes)} observed viewer minutes · ${n(quality.distinct_viewer_readings)} changed readings ·
+      ${n(quality.healthy_chat_minutes)} healthy chat minutes · ${pct(quality.account_coverage)} account-date coverage ·
+      ${n(quality.context_minutes)} minutes with distribution/collaboration context</p>`;
+  } else {
+    capNote = '<p class="muted">Legacy scoring version. Its confidence field measures availability and duration; it is not detection accuracy.</p>';
   }
   el.innerHTML = capNote + keys.map((k) => {
     const c = comps[k] || {};
@@ -789,25 +772,24 @@ function aboutView() {
     <p class="sub">Every channel that reaches the Twitch top 200 is tracked from then on. Each minute the collector records its
       viewer count (Twitch Helix API), its chat activity (anonymous IRC), and its follower total.</p>
     <p>When a stream ends, ${Object.keys(COMPONENTS).length} detectors each rate one kind of evidence from 0 to 1. They are combined with fixed weights
-      (a weighted noisy-OR) into a quotient from 0 to 100. One kind of evidence on its own can add at most 30 points; going
+      (a conservative maximum within groups, then capped noisy-OR across groups) into a quotient from 0 to 100. One kind of evidence on its own can add at most 30 points; going
       higher needs a different kind to agree, because any single line of evidence can misfire on an unusual but innocent stream.
-      The chat and follow checks during spikes count as one kind, since both depend on the same spikes. Spike detectors stand
+      Viewer shape, quiet chat and the chat/follow checks during spikes share one audience-source group. Each group uses its strongest weighted detector. Spike detectors stand
       down for channels whose Twitch count jumps erratically between updates.
       Live streams get a provisional score after an hour.</p>
     <p>Chat engagement is compared with streams of a similar size in the same language, then adjusted for the stream’s main
       category and for similar categories (social, creative, gambling, sports or games). A category with few recent streams
-      leans on its group, and no category can shift the baseline by more than 1.5 standard deviations, so a category full of
-      botted streams cannot make quiet chat look normal.</p>
+      leans on its group, and no category can shift the baseline by more than 1.5 standard deviations, to limit contamination. Peers are past completed streams from other channels, with one stream per channel. Systematic contamination can still affect the baseline.</p>
     <ul>${Object.entries(COMPONENTS).map(([k, [name, desc]]) => `<li><b>${name}</b> (weight ${WEIGHTS[k]}): ${desc}.</li>`).join('')}</ul>
-    <p><b>Confidence</b> reflects how many detectors had enough data and how long the stream was observed. A channel’s
-      quotient is a confidence- and recency-weighted average of its last ten streams, pulled towards zero when there are only
+    <p><b>Observation coverage</b> reflects sampled viewer minutes, healthy chat minutes, account-date completion and detector availability. It does not measure detection accuracy. A channel’s
+      quotient is a coverage- and recency-weighted average of its last ten streams, pulled towards zero when there are only
       a few, so one stream cannot put a channel at the top.</p>
     <h2>Limits</h2>
     <ul>
       <li>The weights are hand-set and have not been calibrated against confirmed cases.</li>
-      <li>Twitch’s API refreshes viewer counts only every few minutes, so short spikes are blurred.</li>
+      <li>Twitch counts can be delayed. The exact refresh schedule is unknown; repeated counts remain observations and missing polls remain gaps.</li>
       <li>Ad breaks, front-page placement, embeds, raids and chat restrictions all change these numbers for innocent reasons.
-        The detectors account for raids, category changes and subscriber-only chat, but not the rest.</li>
+        Known raids, category changes, chat restrictions and observed Shared Chat are considered. Unknown referrals, Drops, ads and promotions can still confound the score.</li>
       <li>Someone else can view-bot a channel to get it penalized. A high quotient says the data looks botted, not who did it.</li>
     </ul>
   </div>`;

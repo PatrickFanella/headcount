@@ -9,9 +9,8 @@ import (
 
 var nan = math.NaN()
 
-// HeldToNaN marks repeated values as missing. Helix caches viewer_count for
-// several minutes, so a repeat carries no new information; interpolating
-// between real changes gives a better curve than a staircase.
+// HeldToNaN removes repeated values only for legacy sensitivity diagnostics.
+// Equal observations do not establish staleness; live scoring retains them.
 func HeldToNaN(v []float64) []float64 {
 	out := slices.Clone(v)
 	last := nan
@@ -172,8 +171,11 @@ func Autocorrelation(v []float64, lag int) float64 {
 	var num, den float64
 	for i := range n {
 		d := v[i] - m
+		if math.IsNaN(d) {
+			continue
+		}
 		den += d * d
-		if i+lag < n {
+		if i+lag < n && !math.IsNaN(v[i+lag]) {
 			num += d * (v[i+lag] - m)
 		}
 	}

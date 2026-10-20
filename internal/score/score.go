@@ -6,8 +6,6 @@ package score
 import (
 	"cmp"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -16,15 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"git.subcult.tv/subculture-collective/headcount/internal/detect"
 	"git.subcult.tv/subculture-collective/headcount/internal/store"
 )
 
 // Version increments whenever detector logic or weights change, so old
 // scores can be told apart and recomputed.
-const Version = 8
+const Version = 9
 
 const (
 	liveEvery       = 15 * time.Minute
@@ -42,17 +38,18 @@ type Scorer struct {
 	store *store.Store
 	log   *slog.Logger
 
-	baseline    *baselines
-	baselineAt  time.Time
 	lastLiveRun time.Time
 
 	// ChatterRetention is how long per-chatter rows are kept after a stream
 	// ends; older streams keep only a summary. Zero disables pruning.
 	ChatterRetention time.Duration
+	ReplayRetention  time.Duration
 	lastPrune        time.Time
 }
 
-func New(s *store.Store, log *slog.Logger) *Scorer { return &Scorer{store: s, log: log} }
+func New(s *store.Store, log *slog.Logger) *Scorer {
+	return &Scorer{store: s, log: log, ReplayRetention: 7 * 24 * time.Hour}
+}
 
 func (s *Scorer) Run(ctx context.Context) {
 	t := time.NewTicker(5 * time.Minute)
@@ -70,26 +67,6 @@ func (s *Scorer) Run(ctx context.Context) {
 }
 
 func (s *Scorer) runOnce(ctx context.Context) error {
-	refit := time.Hour
-	if !s.baseline.ok() {
-		refit = 10 * time.Minute
-	}
-	if time.Since(s.baselineAt) > refit {
-		s.baselineAt = time.Now()
-		peers, err := s.store.ChatPeerStats(ctx, time.Now().Add(-7*24*time.Hour))
-		if err != nil {
-			// Keep the previous baseline and score with it.
-			s.log.Warn("chat baseline", "err", err)
-		} else {
-			s.baseline = fitBaselines(peers)
-			s.log.Info("chat baseline", "streams", len(peers), "ok", s.baseline.ok(),
-				"slope", round(s.baseline.global.slope), "sd", round(s.baseline.global.sd),
-				"languages", len(s.baseline.byLang))
-		}
-	}
-	if s.baseline == nil {
-		s.baseline = &baselines{global: &baseline{}}
-	}
 
 	// The chat collector flushes a minute after it ends; wait a few minutes
 	// so the final chat rows are in.
@@ -127,9 +104,16 @@ func (s *Scorer) runOnce(ctx context.Context) error {
 		s.log.Info("scored", "final", len(done), "provisional", len(refs)-len(done), "channels", len(channels),
 			"demoted", demoted, "restored", restored)
 	}
-	if s.ChatterRetention > 0 && time.Since(s.lastPrune) > time.Hour {
+	if (s.ChatterRetention > 0 || s.ReplayRetention > 0) && time.Since(s.lastPrune) > time.Hour {
 		s.lastPrune = time.Now()
-		s.prune(ctx)
+		if s.ChatterRetention > 0 {
+			s.prune(ctx)
+		}
+		if s.ReplayRetention > 0 {
+			if err := s.store.PruneSnapshots(ctx, time.Now().Add(-s.ReplayRetention)); err != nil {
+				s.log.Warn("prune snapshots", "err", err)
+			}
+		}
 	}
 	return nil
 }
@@ -162,6 +146,9 @@ func (s *Scorer) prune(ctx context.Context) {
 			break
 		}
 	}
+	if err := s.store.PruneObservations(ctx, cutoff); err != nil {
+		s.log.Warn("prune replay evidence", "err", err)
+	}
 	size, _ := s.store.DatabaseSize(ctx)
 	s.log.Info("retention", "streams", streams, "chatter_rows", rows, "users", users, "db_bytes", size)
 }
@@ -181,6 +168,7 @@ func Build(r store.StreamRef, ser store.StreamSeries) detect.StreamData {
 	d := detect.StreamData{
 		Viewers: series(), Chatters: series(), Messages: series(), TopText: series(), Followers: series(),
 		ObservedFromStart: r.FirstSeenAt.Sub(r.StartedAt) <= 3*time.Minute,
+		RestrictedMinutes: make([]bool, n), ContextMinutes: make([]bool, n), ChatHealthy: make([]bool, n),
 	}
 	for _, p := range ser.Viewers {
 		if i := idx(p.TS); i >= 0 && i < n {
@@ -189,6 +177,10 @@ func Build(r store.StreamRef, ser store.StreamSeries) detect.StreamData {
 	}
 	for _, p := range ser.Chat {
 		if i := idx(p.TS); i >= 0 && i < n {
+			if p.Healthy == nil || !*p.Healthy {
+				continue
+			}
+			d.ChatHealthy[i] = p.Healthy != nil && *p.Healthy
 			d.Chatters[i] = float64(p.Chatters)
 			d.Messages[i] = float64(p.Messages)
 			d.TopText[i] = float64(p.TopText)
@@ -199,120 +191,165 @@ func Build(r store.StreamRef, ser store.StreamSeries) detect.StreamData {
 			d.Followers[i] = float64(p.Total)
 		}
 	}
-	// Chat mode timeline: count minutes in subscriber-only or emote-only mode.
-	restricted := false
-	restrictedMinutes := 0
-	lastMode := 0
-	for _, e := range ser.Events {
+	// Replay observed state only from its observation onward. Polled state
+	// expires after 15 minutes; IRC modes expire with unobserved chat transport.
+	events := slices.Clone(ser.Events)
+	slices.SortStableFunc(events, func(a, b store.EventPoint) int { return a.TS.Compare(b.TS) })
+	for _, e := range events {
 		i := max(0, idx(e.TS))
+		if i >= n {
+			continue
+		}
 		switch e.Kind {
 		case "raid_in":
-			v, _ := e.Detail["viewers"].(float64)
-			d.Raids = append(d.Raids, detect.Raid{Minute: i, Viewers: int(v)})
+			d.Raids = append(d.Raids, detect.Raid{Minute: i, Viewers: int(number(e.Detail["viewers"]))})
 		case "game_change":
 			d.Changes = append(d.Changes, i)
-		case "chat_mode":
-			if restricted {
-				restrictedMinutes += min(i, n) - lastMode
-			}
-			subs, _ := e.Detail["subs-only"].(float64)
-			emotes, _ := e.Detail["emote-only"].(float64)
-			restricted = subs > 0 || emotes > 0
-			lastMode = min(i, n)
 		}
 	}
-	if restricted {
-		restrictedMinutes += n - lastMode
+	// Explicit sourced intervals are applied once, not reparsed per minute.
+	for _, e := range events {
+		if e.Kind != "distribution_context" {
+			continue
+		}
+		source, _ := e.Detail["source"].(string)
+		if strings.TrimSpace(source) == "" {
+			continue
+		}
+		until, err := time.Parse(time.RFC3339, fmt.Sprint(e.Detail["until"]))
+		if err != nil {
+			continue
+		}
+		for i := max(0, idx(e.TS)); i < n && start.Add(time.Duration(i)*time.Minute).Before(until); i++ {
+			d.ContextMinutes[i] = true
+		}
 	}
-	d.RestrictedChat = float64(restrictedMinutes) > 0.3*float64(n)
+	modes := map[string]store.EventPoint{}
+	eventIndex := 0
+	healthyStart := start
+	for i := 0; i < n; i++ {
+		at := start.Add(time.Duration(i) * time.Minute)
+		if !d.ChatHealthy[i] {
+			healthyStart = at.Add(time.Minute)
+		}
+		for eventIndex < len(events) && !events[eventIndex].TS.After(at) {
+			e := events[eventIndex]
+			modes[e.Kind] = e
+			eventIndex++
+		}
+		var latest store.EventPoint
+		for _, kind := range []string{"chat_mode", "chat_settings"} {
+			e, ok := modes[kind]
+			if !ok {
+				continue
+			}
+			valid := at.Sub(e.TS) <= 15*time.Minute
+			if kind == "chat_mode" {
+				valid = d.ChatHealthy[i] && (valid || !e.TS.Before(healthyStart.Add(-time.Minute)))
+			}
+			if valid && (latest.TS.IsZero() || e.TS.After(latest.TS)) {
+				latest = e
+			}
+		}
+		x := latest.Detail
+		if latest.Kind == "chat_mode" {
+			_, followers := x["followers-only"]
+			d.RestrictedMinutes[i] = number(x["subs-only"]) > 0 || number(x["emote-only"]) > 0 || (followers && number(x["followers-only"]) >= 0) || number(x["slow"]) > 0
+		} else {
+			d.RestrictedMinutes[i] = truth(x["subscriber_mode"]) || truth(x["emote_mode"]) || truth(x["follower_mode"]) || truth(x["slow_mode"])
+		}
+		if e, ok := modes["shared_chat"]; ok && at.Sub(e.TS) <= 15*time.Minute && truth(e.Detail["active"]) {
+			d.ContextMinutes[i] = true
+		}
+	}
+
+	restricted := 0
+	for _, x := range d.RestrictedMinutes {
+		if x {
+			restricted++
+		}
+	}
+	d.RestrictedChat = restricted > 0
+
 	return d
 }
 
 func (s *Scorer) scoreStream(ctx context.Context, r store.StreamRef) error {
-	ser, err := s.store.LoadSeries(ctx, r)
-	if err != nil {
-		return err
-	}
-	d := Build(r, ser)
-	p := detect.Prepare(d)
-	comps := map[string]detect.Component{
-		"periodic_spikes":   detect.PeriodicSpikes(p),
-		"unexplained_jumps": detect.UnexplainedJumps(d, p),
-		"spike_chat_lift":   detect.SpikeChatLift(d, p),
-		"spike_follow_lift": detect.SpikeFollowLift(d, p),
-		"chat_repetition":   detect.ChatRepetition(d),
-		"start_ramp":        detect.StartRamp(d, p),
-	}
-	comps["follow_bursts"], comps["follower_purge"] = detect.FollowAnomalies(d)
-
-	sync, err := s.synchrony(ctx, r, p)
-	if err != nil {
-		return err
-	}
-	comps["synchronized_spikes"] = sync
-
-	if stats, ok := detect.ChatEngagement(d, p); ok && s.baseline.ok() {
-		game := mainGame(ser.Viewers)
-		name, err := s.store.GameName(ctx, game)
+	var input Snapshot
+	err := s.store.ReadSnapshot(ctx, func(view *store.Store, at time.Time) error {
+		fresh, err := view.StreamRef(ctx, r.ID)
 		if err != nil {
 			return err
 		}
-		e := s.baseline.Expect(r.Language, game, name)
-		z := e.Z(stats.MedianViewers, stats.ChattersPerK)
-		langFlag := 0.0
-		if e.PerLanguage {
-			langFlag = 1
+		r = fresh
+		ser, err := view.LoadSeries(ctx, r)
+		if err != nil {
+			return err
 		}
-		c := detect.ChatResidualComponent(z, d.RestrictedChat, map[string]float64{
-			"median_viewers": stats.MedianViewers, "chatters_per_k": stats.ChattersPerK,
-			"expected_per_k": e.Expected(stats.MedianViewers), "chat_coverage": stats.ChatCoverage,
-			"language_baseline": langFlag, "category_peers": float64(e.CategoryPeers),
-			"category_offset": round(e.CategoryOffset), "family_offset": round(e.FamilyOffset),
-		})
-		c.Reason = engagementNote(e)
-		comps["chat_engagement"] = c
-	} else {
-		comps["chat_engagement"] = detect.Component{Reason: "no chat data or baseline not ready"}
-	}
-
-	total, newAcc, missing, err := s.store.ChatterAccounts(ctx, r.ID, r.StartedAt, newAccountAge)
-	if err != nil {
-		return err
-	}
-	comps["chatter_accounts"] = detect.AccountAgeComponent(total, newAcc, missing)
-	shared, err := s.sharedAccounts(ctx, r, total)
-	if err != nil {
-		return err
-	}
-	comps["shared_accounts"] = shared
-
-	minutes := len(d.Viewers)
-	q, conf := detect.Combine(comps, minutes)
-	return s.store.SaveScore(ctx, store.Score{
-		StreamID: r.ID, ChannelID: r.ChannelID, LastSeenAt: r.LastSeenAt, Version: Version, Minutes: minutes,
-		Quotient: q, Confidence: conf, Final: r.Ended, Components: comps,
+		peers, err := view.ChatPeerStats(ctx, r.StartedAt.Add(-7*24*time.Hour), r.StartedAt, r.ChannelID)
+		if err != nil {
+			return err
+		}
+		accounts, err := view.ChatterAccounts(ctx, r.ID, r.StartedAt, r.LastSeenAt, newAccountAge)
+		if err != nil {
+			return err
+		}
+		behavior, err := view.BehaviorStats(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+		reader := *s
+		reader.store = view
+		shared, err := reader.sharedAccounts(ctx, r, accounts.Total)
+		if err != nil {
+			return err
+		}
+		partners, err := reader.synchronyPartners(ctx, r)
+		if err != nil {
+			return err
+		}
+		game := mainGame(ser.Viewers)
+		name, err := view.GameName(ctx, game)
+		if err != nil {
+			return err
+		}
+		behaviorPeers := []store.BehaviorPeer{}
+		if stats, ok := detect.ChatEngagement(Build(r, ser), detect.Prepared{}); ok {
+			behaviorPeers, err = view.BehaviorPeers(ctx, r, game, stats.MedianViewers)
+			if err != nil {
+				return err
+			}
+		}
+		input = Snapshot{Schema: 1, ObservedAt: at, Ref: r, Series: ser, Peers: peers, Accounts: accounts, Behavior: behavior, BehaviorPeers: behaviorPeers, Shared: shared, Partners: partners, GameID: game, GameName: name}
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	output := Evaluate(input, nil)
+	d := Build(r, input.Series)
+	p := detect.Prepare(d)
+	idx := eligibleOnsets(d, p)
+	start := r.FirstSeenAt.Truncate(time.Minute)
+	onsets := make([]store.Onset, len(idx))
+	for i, m := range idx {
+		onsets[i] = store.Onset{TS: start.Add(time.Duration(m) * time.Minute), Rel: p.Rel[m]}
+	}
+	if err := s.store.ReplaceOnsets(ctx, r.ID, r.ChannelID, onsets, Version); err != nil {
+		return err
+	}
+	return s.store.SaveScore(ctx, store.Score{StreamID: r.ID, ChannelID: r.ChannelID, LastSeenAt: r.LastSeenAt, Version: Version, Minutes: len(d.Viewers), Quotient: output.Quotient, Confidence: output.Coverage, Final: r.Ended, Components: output.Components, Evidence: output.Evidence, Peer: output.Peer, Behavior: input.Behavior, SnapshotInput: input, SnapshotOutput: output, ObservedAt: input.ObservedAt})
 }
 
-// sharedAccounts finds young or suspended chatters who also chatted in other
-// tracked channels during the week before and during the stream. Once a
-// stream's chatter rows are pruned, the previously stored result is reused.
+// sharedAccounts describes young authors overlapping tracked channels.
+// Pruned legacy results are unavailable rather than reused under new semantics.
 func (s *Scorer) sharedAccounts(ctx context.Context, r store.StreamRef, chatters int) (detect.Component, error) {
 	pruned, err := s.store.ChattersPruned(ctx, r.ID)
 	if err != nil {
 		return detect.Component{}, err
 	}
 	if pruned {
-		raw, err := s.store.PreviousComponent(ctx, r.ID, "shared_accounts")
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			// Abort rather than overwrite a result that cannot be recomputed.
-			return detect.Component{}, err
-		}
-		var c detect.Component
-		if raw == nil || json.Unmarshal(raw, &c) != nil {
-			return detect.Component{Reason: "chatter list pruned"}, nil
-		}
-		return c, nil
+		return detect.Component{Reason: "chatter rows pruned; legacy shared evidence not reused"}, nil
 	}
 	young, accounts, err := s.store.SharedYoungChatters(ctx, r.ID, r.ChannelID,
 		r.StartedAt.Add(-youngAccountAge), r.StartedAt.Add(-sharedWindow), r.LastSeenAt)
@@ -330,6 +367,15 @@ func (s *Scorer) sharedAccounts(ctx context.Context, r store.StreamRef, chatters
 		}
 	}
 	c := detect.SharedAccounts(chatters, young, others, sharedMinOther)
+	degreeAdjusted := 0.0
+	for _, degree := range others {
+		if degree >= sharedMinOther {
+			degreeAdjusted += 1 / math.Log2(float64(degree)+2)
+		}
+	}
+	if c.Values != nil {
+		c.Values["degree_adjusted_overlap"] = degreeAdjusted
+	}
 	if c.Available && len(perChannel) > 0 {
 		c.Reason, err = s.sharedNote(ctx, perChannel)
 		if err != nil {
@@ -360,27 +406,11 @@ func (s *Scorer) sharedNote(ctx context.Context, perChannel map[int64]int) (stri
 	return "Most shared with " + strings.Join(parts, ", ") + ".", nil
 }
 
-// synchrony stores this stream's spike onsets and compares them with every
-// other channel live at the same time.
-func (s *Scorer) synchrony(ctx context.Context, r store.StreamRef, p detect.Prepared) (detect.Component, error) {
-	start := r.FirstSeenAt.Truncate(time.Minute)
-	var idx []int
-	if !p.Noisy() {
-		idx = detect.SpikeOnsets(p, spikeThreshold)
-	}
-	onsets := make([]store.Onset, len(idx))
-	own := make([]int64, len(idx))
-	for i, m := range idx {
-		ts := start.Add(time.Duration(m) * time.Minute)
-		onsets[i] = store.Onset{TS: ts, Rel: p.Rel[m]}
-		own[i] = ts.Unix() / 60
-	}
-	if err := s.store.ReplaceOnsets(ctx, r.ID, r.ChannelID, onsets); err != nil {
-		return detect.Component{}, err
-	}
-	rows, err := s.store.PartnerOnsets(ctx, r.ChannelID, r.FirstSeenAt, r.LastSeenAt)
+// synchronyPartners freezes currently available, version-matched partner onsets.
+func (s *Scorer) synchronyPartners(ctx context.Context, r store.StreamRef) ([]detect.Partner, error) {
+	rows, err := s.store.PartnerOnsets(ctx, r.ChannelID, r.FirstSeenAt, r.LastSeenAt, Version)
 	if err != nil {
-		return detect.Component{}, err
+		return nil, err
 	}
 	partners := make([]detect.Partner, len(rows))
 	for i, row := range rows {
@@ -390,12 +420,21 @@ func (s *Scorer) synchrony(ctx context.Context, r store.StreamRef, p detect.Prep
 		}
 		partners[i] = detect.Partner{Login: row.Login, OverlapMinutes: row.OverlapMinutes, Onsets: mins}
 	}
-	if p.Noisy() {
-		return detect.Component{Reason: "Twitch viewer count too erratic between updates"}, nil
-	}
-	// Helix refreshes every 3-5 minutes, so onsets can be off by a few minutes.
-	return detect.Synchrony(own, partners, 3), nil
+	return partners, nil
 }
+
+func number(x any) float64 {
+	switch v := x.(type) {
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	}
+	return 0
+}
+func truth(x any) bool { b, _ := x.(bool); return b }
 
 func round(x float64) float64 { return math.Round(x*1000) / 1000 }
 

@@ -33,10 +33,13 @@ type minuteAgg struct {
 	messages, newChatters, firstMsgs, emoteOnly, bans, timeouts int
 	chatters                                                    map[int64]int
 	texts                                                       map[string]int
+	commands, utility, botBadge, duplicates, delayed            int
+	delayMS                                                     int64
+	behaviors                                                   map[int64]*authorBehavior
 }
 
 func newMinuteAgg() *minuteAgg {
-	return &minuteAgg{chatters: map[int64]int{}, texts: map[string]int{}}
+	return &minuteAgg{chatters: map[int64]int{}, texts: map[string]int{}, behaviors: map[int64]*authorBehavior{}}
 }
 
 type streamSeen struct {
@@ -111,6 +114,8 @@ type Collector struct {
 	conns  []*conn
 	joined map[string]*conn
 
+	dedup        messageIDs
+	UtilityIDs   map[int64]bool // operator-configured legitimate automation; metadata only
 	statsMu      sync.Mutex
 	totalMsgs    int64
 	lastFlush    time.Time
@@ -145,6 +150,7 @@ func (c *Collector) Health() (joined int, lastFlush time.Time, lastMessages int)
 func (c *Collector) Run(ctx context.Context) {
 	go c.syncLoop(ctx)
 	go c.userLoop(ctx)
+	go c.contextLoop(ctx)
 	c.flushLoop(ctx)
 }
 
@@ -293,7 +299,9 @@ func (c *Collector) agg(channelID int64) *minuteAgg {
 	return a
 }
 
-func (c *Collector) onPrivmsg(msg twitch.PrivateMessage) {
+func (c *Collector) onPrivmsg(msg twitch.PrivateMessage) { c.onMessage(msg, time.Now().UTC()) }
+
+func (c *Collector) onMessage(msg twitch.PrivateMessage, now time.Time) {
 	room, err1 := strconv.ParseInt(msg.RoomID, 10, 64)
 	user, err2 := strconv.ParseInt(msg.User.ID, 10, 64)
 	if err1 != nil || err2 != nil {
@@ -310,9 +318,43 @@ func (c *Collector) onPrivmsg(msg twitch.PrivateMessage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	a := c.agg(room)
+	if c.dedup.seen(msg.ID, now) {
+		a.duplicates++
+		return
+	}
+	if !msg.Time.IsZero() {
+		delay := now.Sub(msg.Time)
+		a.delayMS += max(0, delay.Milliseconds())
+		if !msg.Time.Truncate(time.Minute).Equal(now.Truncate(time.Minute)) {
+			a.delayed++
+			return
+		}
+	}
 	a.messages++
+	b := a.behaviors[user]
+	if b == nil {
+		b = &authorBehavior{}
+		a.behaviors[user] = b
+	}
+	stamp := msg.Time
+	if stamp.IsZero() {
+		stamp = now
+	}
+	b.observe(stamp)
+	if strings.HasPrefix(strings.TrimSpace(msg.Message), "!") {
+		a.commands++
+		b.commands++
+	}
+	if c.UtilityIDs[user] {
+		a.utility++
+		b.utility++
+	}
+	if _, ok := msg.User.Badges["bot"]; ok {
+		a.botBadge++
+		b.botBadge++
+	}
 	a.chatters[user]++
-	if text != "" {
+	if text != "" && !c.UtilityIDs[user] && !strings.HasPrefix(strings.TrimSpace(msg.Message), "!") {
 		a.texts[text]++
 	}
 	if msg.FirstMessage {
@@ -399,10 +441,12 @@ func (c *Collector) onRoomState(cn *conn, msg twitch.RoomStateMessage) {
 	defer c.mu.Unlock()
 	login := strings.ToLower(msg.Channel)
 	since := time.Unix(0, cn.connectedAt.Load())
+	initial := false
 	// A ROOMSTATE can arrive after we departed; only confirm current joins.
 	if c.joinedOn[login] == cn {
 		if j, ok := c.confirmed[login]; !ok || j.cn != cn || j.at.Before(since) {
 			c.confirmed[login] = joinedRoom{room: room, cn: cn, at: time.Now()}
+			initial = true
 		}
 	}
 	if len(msg.State) == 0 {
@@ -414,7 +458,7 @@ func (c *Collector) onRoomState(cn *conn, msg twitch.RoomStateMessage) {
 		next = map[string]int{}
 	}
 	maps.Copy(next, msg.State)
-	if maps.Equal(prev, next) {
+	if maps.Equal(prev, next) && !initial {
 		return
 	}
 	c.roomState[room] = next
@@ -452,6 +496,7 @@ func (c *Collector) flush(ctx context.Context, minute time.Time) {
 	events := c.events
 	c.aggs = map[int64]*minuteAgg{}
 	c.events = nil
+	roomHealthy := map[int64]bool{}
 	for login, j := range c.confirmed {
 		// The join must be current and confirmed on this connection before the
 		// minute began, and the connection must have kept receiving all minute.
@@ -459,6 +504,7 @@ func (c *Collector) flush(ctx context.Context, minute time.Time) {
 		if c.joinedOn[login] != j.cn || !healthy[j.cn] || j.at.After(minute) || j.at.Before(time.Unix(0, up)) {
 			continue
 		}
+		roomHealthy[j.room] = true
 		if _, ok := aggs[j.room]; !ok && c.live.StreamID(j.room) != 0 {
 			aggs[j.room] = newMinuteAgg()
 		}
@@ -477,16 +523,22 @@ func (c *Collector) flush(ctx context.Context, minute time.Time) {
 			top = max(top, n)
 		}
 		total += a.messages
+		h := roomHealthy[room] && a.delayed == 0
 		minutes = append(minutes, store.ChatMinute{
 			ChannelID: room, StreamID: sid, Messages: a.messages, UniqueChatters: len(a.chatters),
 			NewChatters: a.newChatters, FirstMsgs: a.firstMsgs, EmoteOnly: a.emoteOnly,
 			DistinctTexts: len(a.texts), TopTextCount: top, Bans: a.bans, Timeouts: a.timeouts,
+			Healthy: &h, Commands: a.commands, UtilityMessages: a.utility, BotBadgeMessages: a.botBadge, DuplicateMessages: a.duplicates, DelayedMessages: a.delayed, SourceDelayMS: a.delayMS,
 		})
 		if sid == 0 {
 			continue
 		}
 		for user, n := range a.chatters {
-			chatters = append(chatters, store.ChatterMinute{StreamID: sid, UserID: user, ChannelID: room, Messages: n})
+			b := a.behaviors[user]
+			if b == nil {
+				b = &authorBehavior{}
+			}
+			chatters = append(chatters, store.ChatterMinute{StreamID: sid, UserID: user, ChannelID: room, Messages: n, Commands: b.commands, UtilityMessages: b.utility, BotBadgeMessages: b.botBadge, GapBins: b.gaps})
 		}
 	}
 	wctx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -526,9 +578,17 @@ func (c *Collector) userLoop(ctx context.Context) {
 			}
 		}
 		c.mu.Unlock()
+		due, err := c.store.DueUsers(ctx, 100)
+		if err != nil {
+			c.log.Warn("due user lookups", "err", err)
+		} else {
+			batch = append(batch, due...)
+		}
 		if len(batch) == 0 {
 			continue
 		}
+		slices.Sort(batch)
+		batch = slices.Compact(batch)
 		if err := c.lookupUsers(ctx, batch); err != nil && ctx.Err() == nil {
 			c.log.Warn("user lookup", "err", err)
 		}
@@ -538,6 +598,7 @@ func (c *Collector) userLoop(ctx context.Context) {
 func (c *Collector) lookupUsers(ctx context.Context, ids []int64) error {
 	unknown, err := c.store.UnknownUsers(ctx, ids)
 	if err != nil {
+		c.requeue(ids)
 		return err
 	}
 	for start := 0; start < len(unknown); start += 100 {
@@ -551,11 +612,7 @@ func (c *Collector) lookupUsers(ctx context.Context, ids []int64) error {
 		cancel()
 		if err != nil {
 			// Put the rest back for a later attempt.
-			c.mu.Lock()
-			for _, id := range unknown[start:] {
-				c.pending[id] = struct{}{}
-			}
-			c.mu.Unlock()
+			c.requeue(unknown[start:])
 			return err
 		}
 		byID := map[int64]helix.User{}
@@ -574,6 +631,7 @@ func (c *Collector) lookupUsers(ctx context.Context, ids []int64) error {
 			}
 		}
 		if err := c.store.InsertUsers(ctx, rows); err != nil {
+			c.requeue(unknown[start:])
 			return err
 		}
 	}
