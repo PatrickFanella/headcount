@@ -20,7 +20,10 @@ type StreamData struct {
 	ObservedFromStart bool
 	// RestrictedChat is true when subscriber-only or emote-only mode was on
 	// for a substantial part of the stream.
-	RestrictedChat bool
+	RestrictedChat    bool
+	RestrictedMinutes []bool // participation restricted at each minute
+	ContextMinutes    []bool // observed passive distribution or collaboration
+	ChatHealthy       []bool // full minute of transport and join coverage
 }
 
 type Raid struct {
@@ -34,6 +37,7 @@ type Component struct {
 	Available bool               `json:"available"`
 	Strength  float64            `json:"strength"`
 	Values    map[string]float64 `json:"values,omitempty"`
+	Coverage  *float64           `json:"coverage,omitempty"`
 	Reason    string             `json:"reason,omitempty"` // why it is unavailable
 }
 
@@ -43,7 +47,7 @@ func unavailable(reason string) Component {
 
 // Prepared holds derived series shared by several detectors.
 type Prepared struct {
-	Viewers  []float64 // interpolated between real Helix changes
+	Viewers  []float64 // observed counts, retaining gaps and repeated values
 	Baseline []float64 // rolling median
 	Rel      []float64 // (viewers - baseline) / baseline
 	Coverage float64   // fraction of minutes with any sample
@@ -69,15 +73,16 @@ const baselineWindow = 31
 
 func Prepare(d StreamData) Prepared {
 	p := Prepared{Coverage: Coverage(d.Viewers), Noise: updateNoise(d.Viewers)}
-	v := Interpolate(HeldToNaN(d.Viewers))
-	if v == nil {
+	v := slices.Clone(d.Viewers)
+	if len(v) == 0 {
 		return p
 	}
 	p.Viewers = v
 	p.Baseline = RollingMedian(v, baselineWindow)
 	p.Rel = make([]float64, len(v))
 	for i := range v {
-		if p.Baseline[i] > 0 {
+		p.Rel[i] = nan
+		if !math.IsNaN(v[i]) && p.Baseline[i] > 0 && !contextAt(d, i-baselineWindow/2, i+baselineWindow/2+1) {
 			p.Rel[i] = (v[i] - p.Baseline[i]) / p.Baseline[i]
 		}
 	}
@@ -85,12 +90,11 @@ func Prepare(d StreamData) Prepared {
 }
 
 // PeriodicSpikes looks for viewer excursions that repeat at a fixed period.
-// Organic streams have event-driven bumps (raids, highlights) and periodic
-// dips (ad breaks); repeated upward spikes that return to the same baseline
-// are what a rotating view-bot produces.
+// Periodicity can also arise from scheduled organic events or counting
+// behavior; this detector describes shape and does not identify a supplier.
 func PeriodicSpikes(p Prepared) Component {
 	n := len(p.Rel)
-	if n < 90 || p.Coverage < 0.7 {
+	if n < 90 || p.Coverage < 0.7 || Coverage(p.Rel) < 0.7 {
 		return unavailable("too short")
 	}
 	if p.Noisy() {
@@ -152,6 +156,9 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 	}
 	var jumps, unexplained int
 	for i := 15; i < n-10; i++ {
+		if math.IsNaN(p.Viewers[i]) || math.IsNaN(p.Viewers[i-3]) || contextAt(d, i-5, i+10) {
+			continue
+		}
 		delta := p.Viewers[i] - p.Viewers[i-3]
 		threshold := math.Max(0.08*p.Baseline[i], 300)
 		if math.Abs(delta) < threshold {
@@ -162,7 +169,7 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 		// between cached values.
 		before := Median(p.Viewers[i-13 : i-3])
 		after := Median(p.Viewers[i : i+10])
-		if math.Abs(after-before) < threshold || math.Signbit(after-before) != math.Signbit(delta) {
+		if math.IsNaN(before) || math.IsNaN(after) || math.Abs(after-before) < threshold || math.Signbit(after-before) != math.Signbit(delta) {
 			continue
 		}
 		jumps++
@@ -188,7 +195,7 @@ func UnexplainedJumps(d StreamData, p Prepared) Component {
 // strength needs several material spikes: one or two, or spikes barely above
 // the noise, are not evidence.
 func SpikeChatLift(d StreamData, p Prepared) Component {
-	if len(p.Rel) < 90 {
+	if len(p.Rel) < 90 || p.Coverage < 0.7 {
 		return unavailable("too short")
 	}
 	if p.Noisy() {
@@ -196,7 +203,7 @@ func SpikeChatLift(d StreamData, p Prepared) Component {
 	}
 	ep := spikeEpisodes(d, p)
 	if len(ep) == 0 {
-		return Component{Available: true, Values: map[string]float64{"spikes": 0}}
+		return unavailable("no eligible spike episodes")
 	}
 	ratio, n, lift, ok := episodeLift(d.Chatters, ep, 1)
 	if !ok {
@@ -251,7 +258,7 @@ func spikeEpisodes(d StreamData, p Prepared) []episode {
 	}
 	var out []episode
 	for _, i := range SpikeOnsets(p, threshold) {
-		if i < 20 || explained(i) {
+		if i < 20 || explained(i) || contextAt(d, i-15, i+15) || restrictedRange(d, i-15, i+15) {
 			continue
 		}
 		end := i
@@ -295,7 +302,7 @@ func meanCovered(v []float64, r [2]int) (float64, bool) {
 // SpikeFollowLift asks whether follows accelerate when viewers spike, using
 // the same per-spike comparison as SpikeChatLift.
 func SpikeFollowLift(d StreamData, p Prepared) Component {
-	if len(p.Rel) < 90 {
+	if len(p.Rel) < 90 || p.Coverage < 0.7 {
 		return unavailable("too short")
 	}
 	if p.Noisy() {
@@ -303,7 +310,7 @@ func SpikeFollowLift(d StreamData, p Prepared) Component {
 	}
 	ep := spikeEpisodes(d, p)
 	if len(ep) == 0 {
-		return Component{Available: true, Values: map[string]float64{"spikes": 0}}
+		return unavailable("no eligible spike episodes")
 	}
 	ratio, n, lift, ok := episodeLift(FollowDeltas(d.Followers), ep, 0.2)
 	if !ok {
@@ -314,8 +321,9 @@ func SpikeFollowLift(d StreamData, p Prepared) Component {
 		"lift_ratio": ratio, "spikes": n, "median_spike_rel": lift}}
 }
 
-// FollowDeltas converts follower totals into per-minute gains, spreading a
-// gain evenly across unsampled minutes.
+// FollowDeltas estimates rates only across adjacent or two-minute intervals.
+// Longer intervals stay unknown for episode timing; anomaly counting uses
+// FollowerIntervals directly instead of these inferred minute rates.
 func FollowDeltas(totals []float64) []float64 {
 	out := make([]float64, len(totals))
 	for i := range out {
@@ -326,7 +334,7 @@ func FollowDeltas(totals []float64) []float64 {
 		if math.IsNaN(x) {
 			continue
 		}
-		if prev >= 0 {
+		if prev >= 0 && i-prev <= 2 {
 			per := (x - totals[prev]) / float64(i-prev)
 			for j := prev + 1; j <= i; j++ {
 				out[j] = per
@@ -337,46 +345,46 @@ func FollowDeltas(totals []float64) []float64 {
 	return out
 }
 
-// FollowAnomalies looks for follow bursts and follower purges. Twitch
-// periodically removes fake follows, which shows up as a large drop.
+// FollowAnomalies flags unusual observed net-change intervals. It does not
+// identify individual follow events or the cause of a follower drop.
 func FollowAnomalies(d StreamData) (bursts, purges Component) {
-	deltas := FollowDeltas(d.Followers)
-	if Coverage(deltas) < 0.5 || len(deltas) < 60 {
-		return unavailable("no follower data"), unavailable("no follower data")
+	intervals := FollowerIntervals(d.Followers)
+	intervals = slices.DeleteFunc(intervals, func(x FollowerInterval) bool { return contextAt(d, x.End-x.Minutes, x.End+1) })
+	if len(d.Followers) < 60 || len(intervals) < 6 {
+		return unavailable("few observed follower intervals"), unavailable("few observed follower intervals")
 	}
-	med := Median(deltas)
-	mad := math.Max(MAD(deltas), 1)
+	rates := make([]float64, len(intervals))
+	covered := 0
+	for i, x := range intervals {
+		rates[i] = x.Delta / float64(x.Minutes)
+		covered += x.Minutes
+	}
+	if covered*2 < len(d.Followers) {
+		return unavailable("sparse follower intervals"), unavailable("sparse follower intervals")
+	}
+	med := Median(rates)
+	mad := math.Max(MAD(rates), 1)
 	var nBurst, nPurge int
 	var burstFollows, purged float64
-	for _, x := range deltas {
-		if math.IsNaN(x) {
-			continue
-		}
-		if x > med+10*mad && x > math.Max(50, 4*med) {
+	for _, x := range intervals {
+		rate := x.Delta / float64(x.Minutes)
+		if rate > med+10*mad && rate > math.Max(50, 4*med) {
 			nBurst++
-			burstFollows += x - med
+			burstFollows += x.Delta - med*float64(x.Minutes)
 		}
-		if x < -math.Max(100, 10*mad) {
+		if rate < -math.Max(100, 10*mad) {
 			nPurge++
-			purged += -x
+			purged -= x.Delta
 		}
 	}
+	hours := float64(covered) / 60
 	gained := 0.0
-	first, last := nan, nan
-	for _, x := range d.Followers {
-		if !math.IsNaN(x) {
-			if math.IsNaN(first) {
-				first = x
-			}
-			last = x
-		}
+	for _, x := range intervals {
+		gained += x.Delta
 	}
-	gained = last - first
-	hours := float64(len(deltas)) / 60
-	bursts = Component{Available: true, Strength: ramp(float64(nBurst)/hours, 0.2, 1.5), Values: map[string]float64{
-		"bursts": float64(nBurst), "burst_follows": burstFollows, "median_per_min": med, "gained": gained}}
-	purges = Component{Available: true, Strength: ramp(purged, 200, 2000), Values: map[string]float64{
-		"drops": float64(nPurge), "purged": purged}}
+	values := map[string]float64{"bursts": float64(nBurst), "burst_follows": burstFollows, "median_per_min": med, "gained": gained, "observed_intervals": float64(len(intervals)), "covered_minutes": float64(covered)}
+	bursts = Component{Available: true, Strength: ramp(float64(nBurst)/hours, 0.2, 1.5), Values: values, Reason: "net changes between observations; timing within each interval unknown"}
+	purges = Component{Available: true, Strength: ramp(purged, 200, 2000), Values: map[string]float64{"drops": float64(nPurge), "purged": purged}, Reason: "net follower loss; removal cause unknown"}
 	return
 }
 
@@ -385,7 +393,7 @@ func ChatRepetition(d StreamData) Component {
 	var top, msgs float64
 	minutes := 0
 	for i := range d.Messages {
-		if math.IsNaN(d.Messages[i]) || d.Messages[i] < 20 {
+		if math.IsNaN(d.Messages[i]) || d.Messages[i] < 20 || restrictedAt(d, i) {
 			continue
 		}
 		top += d.TopText[i]
@@ -402,7 +410,7 @@ func ChatRepetition(d StreamData) Component {
 // StartRamp measures how quickly viewers reach half the stream's median.
 // Notifications make large streams ramp fast, so this carries little weight.
 func StartRamp(d StreamData, p Prepared) Component {
-	if !d.ObservedFromStart || len(p.Viewers) < 60 {
+	if !d.ObservedFromStart || len(p.Viewers) < 60 || contextAt(d, 0, min(15, len(p.Viewers))) {
 		return unavailable("start not observed")
 	}
 	if p.Noisy() {
@@ -431,23 +439,22 @@ type ChatStats struct {
 }
 
 func ChatEngagement(d StreamData, p Prepared) (ChatStats, bool) {
-	if len(p.Viewers) < 30 {
+	if len(d.Viewers) < 30 {
 		return ChatStats{}, false
 	}
-	ratios := make([]float64, 0, len(p.Viewers))
-	withChat := 0
-	for i, v := range p.Viewers {
-		if i >= len(d.Chatters) || math.IsNaN(d.Chatters[i]) || v < 50 {
+	var viewers, ratios []float64
+	for i, v := range d.Viewers {
+		if i >= len(d.Chatters) || math.IsNaN(v) || math.IsNaN(d.Chatters[i]) || v < 100 || restrictedAt(d, i) || contextAt(d, i, i+1) {
 			continue
 		}
-		withChat++
+		viewers = append(viewers, v)
 		ratios = append(ratios, d.Chatters[i]/v*1000)
 	}
-	cov := float64(withChat) / float64(len(p.Viewers))
-	if cov < 0.5 {
+	cov := float64(len(ratios)) / float64(len(d.Viewers))
+	if len(ratios) < 30 || cov < 0.5 {
 		return ChatStats{ChatCoverage: cov}, false
 	}
-	return ChatStats{MedianViewers: Median(p.Viewers), ChattersPerK: Median(ratios), ChatCoverage: cov}, true
+	return ChatStats{MedianViewers: Median(viewers), ChattersPerK: Median(ratios), ChatCoverage: cov}, true
 }
 
 // ChatResidualComponent turns a peer-group z-score of log chatters-per-1k
@@ -462,17 +469,16 @@ func ChatResidualComponent(z float64, restricted bool, values map[string]float64
 	return Component{Available: true, Strength: s, Values: values}
 }
 
-// AccountAgeComponent scores the share of chatters with very new or missing
-// (suspended/deleted) accounts.
+// AccountAgeComponent scores young accounts. Unavailable accounts are diagnostic only.
 func AccountAgeComponent(chatters, newAccounts, missing int) Component {
 	if chatters < 50 {
 		return unavailable("few chatters")
 	}
 	newShare := float64(newAccounts) / float64(chatters)
 	missShare := float64(missing) / float64(chatters)
-	s := math.Max(ramp(newShare, 0.15, 0.4), ramp(missShare, 0.03, 0.15))
+	s := ramp(newShare, 0.15, 0.4)
 	return Component{Available: true, Strength: s, Values: map[string]float64{
-		"chatters": float64(chatters), "new_account_share": newShare, "missing_share": missShare}}
+		"chatters": float64(chatters), "new_account_share": newShare, "unavailable_share": missShare}}
 }
 
 // Weights for combining components. They are hand-set and uncalibrated.
@@ -492,66 +498,68 @@ var Weights = map[string]float64{
 }
 
 // Families group detectors that read the same underlying evidence. A
-// detector can only be corroborated by one from another family: the chat and
-// follow lift detectors both depend on the same viewer spikes being real, so
-// they do not confirm each other.
+// passive audience-source change can affect shape, response and engagement
+// together, so those all share a family. These groups are conservative
+// dependency assumptions, not a claim of statistical independence.
 var Families = map[string]string{
-	"periodic_spikes": "viewer_shape", "synchronized_spikes": "viewer_shape",
-	"unexplained_jumps": "viewer_shape", "start_ramp": "viewer_shape",
-	"spike_chat_lift": "spike_response", "spike_follow_lift": "spike_response",
-	"chat_engagement": "chat", "chat_repetition": "chat",
-	"chatter_accounts": "accounts", "shared_accounts": "accounts",
+	"periodic_spikes": "audience", "synchronized_spikes": "audience",
+	"unexplained_jumps": "audience", "start_ramp": "audience",
+	"spike_chat_lift": "audience", "spike_follow_lift": "audience",
+	"chat_engagement": "audience", "chat_repetition": "chat",
+	"chatter_accounts": "chat", "shared_accounts": "chat",
 	"follow_bursts": "follows", "follower_purge": "follows",
 }
 
-// SingleCap is the most one detector can contribute (0 to 1) without support
+// SingleCap is the most one shared-cause family contributes without support
 // from another. One detector can misfire on an unusual but innocent stream;
-// a high quotient needs at least two independent kinds of evidence.
+// higher scores require another conservative cause group; groups may still correlate.
 const SingleCap = 0.3
 
 // Combine merges components with a weighted noisy-OR, giving a quotient from
 // 0 to 100. Each component contributes evidence w*strength; evidence within a
-// family combines by noisy-OR. Every family is then capped at SingleCap plus
+// family contributes only its strongest weighted component. Every family is capped at SingleCap plus
 // the strongest other family, so one line of evidence alone gives at most 30.
 // Confidence reflects how much of the total weight could be evaluated and how
 // long the stream was observed.
 func Combine(components map[string]Component, minutes int) (quotient, confidence float64) {
 	var availW, totalW float64
-	keepByFamily := map[string]float64{}
-	for name, w := range Weights {
+	evidence := map[string]float64{}
+	for _, name := range slices.Sorted(maps.Keys(Weights)) {
+		w := Weights[name]
 		totalW += w
-		c, ok := components[name]
-		if !ok || !c.Available {
+		c := components[name]
+		if !c.Available {
 			continue
 		}
-		availW += w
-		f := Families[name]
-		if _, ok := keepByFamily[f]; !ok {
-			keepByFamily[f] = 1
+		coverage := 1.0
+		if c.Coverage != nil {
+			coverage = math.Max(0, math.Min(1, *c.Coverage))
 		}
-		keepByFamily[f] *= 1 - w*math.Max(0, math.Min(1, c.Strength))
+		availW += w * coverage
+		strength := c.Strength
+		if math.IsNaN(strength) || math.IsInf(strength, 0) {
+			continue
+		}
+		f := Families[name]
+		evidence[f] = math.Max(evidence[f], w*math.Max(0, math.Min(1, strength)))
 	}
 	keep := 1.0
-	// Sorted so floating-point products do not depend on map order.
-	for _, f := range slices.Sorted(maps.Keys(keepByFamily)) {
-		k := keepByFamily[f]
+	for _, f := range slices.Sorted(maps.Keys(evidence)) {
 		other := 0.0
-		for g, kg := range keepByFamily {
+		for g, e := range evidence {
 			if g != f {
-				other = math.Max(other, 1-kg)
+				other = math.Max(other, e)
 			}
 		}
-		keep *= 1 - math.Min(1-k, SingleCap+other)
+		keep *= 1 - math.Min(evidence[f], SingleCap+other)
 	}
 	quotient = 100 * (1 - keep)
-	confidence = (availW / totalW) * math.Min(1, float64(minutes)/180)
+	confidence = (availW / totalW) * math.Min(1, math.Max(0, float64(minutes)/180))
 	return
 }
 
-// SharedAccounts scores the share of a stream's chatters that are young or
-// suspended accounts also chatting in several other tracked channels. Chat-bot
-// and follow-bot services reuse the same fresh accounts across customers;
-// ordinary new viewers rarely chat in many unrelated top channels in a week.
+// SharedAccounts describes young authors observed across tracked channels.
+// Community overlap, promotions and utility bots can produce this too.
 // minOther is how many other channels an account must appear in.
 func SharedAccounts(chatters, young int, otherChannels []int, minOther int) Component {
 	if chatters < 50 {
@@ -566,7 +574,7 @@ func SharedAccounts(chatters, young int, otherChannels []int, minOther int) Comp
 	share := float64(shared) / float64(chatters)
 	s := ramp(share, 0.005, 0.04) * ramp(float64(shared), 2, 8)
 	return Component{Available: true, Strength: s, Values: map[string]float64{
-		"chatters": float64(chatters), "young_or_suspended": float64(young),
+		"chatters": float64(chatters), "young_accounts": float64(young),
 		"shared_accounts": float64(shared), "shared_share": share}}
 }
 

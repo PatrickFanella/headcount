@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,7 +39,7 @@ func (s *Store) LiveStreamsToScore(ctx context.Context, minMinutes int) ([]Strea
 }
 
 func (s *Store) streamRefs(ctx context.Context, sql string, args ...any) ([]StreamRef, error) {
-	rows, err := s.Pool.Query(ctx, sql, args...)
+	rows, err := s.reader().Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -61,10 +62,13 @@ type ViewerPoint struct {
 }
 
 type ChatPoint struct {
-	TS       time.Time
-	Messages int
-	Chatters int
-	TopText  int
+	TS                                                                              time.Time
+	Messages                                                                        int
+	Chatters                                                                        int
+	TopText                                                                         int
+	Healthy                                                                         *bool
+	Commands, UtilityMessages, BotBadgeMessages, DuplicateMessages, DelayedMessages int
+	SourceDelayMS                                                                   int64
 }
 
 type FollowerPoint struct {
@@ -90,7 +94,7 @@ type StreamSeries struct {
 func (s *Store) LoadSeries(ctx context.Context, r StreamRef) (StreamSeries, error) {
 	var out StreamSeries
 	from, to := r.FirstSeenAt, r.LastSeenAt
-	rows, err := s.Pool.Query(ctx, `SELECT ts, viewers, coalesce(game_id, '') FROM viewer_samples
+	rows, err := s.reader().Query(ctx, `SELECT ts, viewers, coalesce(game_id, '') FROM viewer_samples
 		WHERE channel_id = $1 AND stream_id = $2 AND ts BETWEEN $3 AND $4 ORDER BY ts`, r.ChannelID, r.ID, from, to)
 	if err != nil {
 		return out, err
@@ -103,24 +107,32 @@ func (s *Store) LoadSeries(ctx context.Context, r StreamRef) (StreamSeries, erro
 		}
 		out.Viewers = append(out.Viewers, p)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return out, err
+	}
 	rows.Close()
 
-	rows, err = s.Pool.Query(ctx, `SELECT ts, messages, unique_chatters, top_text_count FROM chat_minutes
+	rows, err = s.reader().Query(ctx, `SELECT ts, messages, unique_chatters, top_text_count,healthy,commands,utility_messages,bot_badge_messages,duplicate_messages,delayed_messages,source_delay_ms FROM chat_minutes
 		WHERE channel_id = $1 AND ts BETWEEN $2 AND $3 ORDER BY ts`, r.ChannelID, from, to)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		var p ChatPoint
-		if err := rows.Scan(&p.TS, &p.Messages, &p.Chatters, &p.TopText); err != nil {
+		if err := rows.Scan(&p.TS, &p.Messages, &p.Chatters, &p.TopText, &p.Healthy, &p.Commands, &p.UtilityMessages, &p.BotBadgeMessages, &p.DuplicateMessages, &p.DelayedMessages, &p.SourceDelayMS); err != nil {
 			rows.Close()
 			return out, err
 		}
 		out.Chat = append(out.Chat, p)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return out, err
+	}
 	rows.Close()
 
-	rows, err = s.Pool.Query(ctx, `SELECT ts, total FROM follower_samples
+	rows, err = s.reader().Query(ctx, `SELECT ts, total FROM follower_samples
 		WHERE channel_id = $1 AND ts BETWEEN $2 AND $3 ORDER BY ts`, r.ChannelID, from, to)
 	if err != nil {
 		return out, err
@@ -133,11 +145,17 @@ func (s *Store) LoadSeries(ctx context.Context, r StreamRef) (StreamSeries, erro
 		}
 		out.Followers = append(out.Followers, p)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return out, err
+	}
 	rows.Close()
 
-	rows, err = s.Pool.Query(ctx, `
-		(SELECT ts, kind, detail FROM channel_events WHERE channel_id = $1 AND kind = 'chat_mode' AND ts < $2
-		 ORDER BY ts DESC LIMIT 1)
+	rows, err = s.reader().Query(ctx, `
+		(SELECT DISTINCT ON(kind) ts, kind, detail FROM channel_events WHERE channel_id = $1 AND kind IN ('chat_mode','chat_settings','shared_chat') AND ts < $2
+		 ORDER BY kind,ts DESC)
+  UNION ALL
+  (SELECT ts,kind,detail FROM channel_events WHERE channel_id=$1 AND kind='distribution_context' AND ts<$2 AND (detail->>'until')::timestamptz>$2)
 		UNION ALL
 		(SELECT ts, kind, detail FROM channel_events WHERE channel_id = $1 AND ts BETWEEN $2 AND $3)
 		ORDER BY ts`, r.ChannelID, from, to.Add(time.Minute))
@@ -157,57 +175,60 @@ func (s *Store) LoadSeries(ctx context.Context, r StreamRef) (StreamSeries, erro
 	return out, rows.Err()
 }
 
-// ChatterAccounts counts a stream's chatters with known accounts, those
-// created within newWithin of the stream start, and missing accounts.
-func (s *Store) ChatterAccounts(ctx context.Context, streamID int64, startedAt time.Time, newWithin time.Duration) (total, newAccounts, missing int, err error) {
-	err = s.Pool.QueryRow(ctx, `
-		SELECT count(*),
-		       count(*) FILTER (WHERE u.created_at > $2),
-		       count(*) FILTER (WHERE u.missing)
-		FROM stream_chatters sc JOIN twitch_users u ON u.id = sc.user_id
-		WHERE sc.stream_id = $1`, streamID, startedAt.Add(-newWithin)).Scan(&total, &newAccounts, &missing)
-	if err != nil || total > 0 {
+// AccountStats keeps all observed authors in the denominator. Unavailability
+// describes a lookup, never the reason an account was omitted.
+type AccountStats struct {
+	Total         int  `json:"total"`
+	Resolved      int  `json:"resolved"`
+	New           int  `json:"new"`
+	Unavailable   int  `json:"unavailable"`
+	Pending       int  `json:"pending"`
+	CoverageKnown bool `json:"coverage_known"`
+}
+
+func (a AccountStats) Coverage() float64 {
+	if a.Total == 0 || !a.CoverageKnown {
+		return 0
+	}
+	return float64(a.Resolved) / float64(a.Total)
+}
+
+func (s *Store) ChatterAccounts(ctx context.Context, streamID int64, startedAt, endedAt time.Time, newWithin time.Duration) (a AccountStats, err error) {
+	a.CoverageKnown = true
+	err = s.reader().QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE u.created_at IS NOT NULL),
+ count(*) FILTER(WHERE u.created_at>$2 AND u.created_at<=$3 AND c.utility_messages<c.messages),count(*) FILTER(WHERE u.missing),count(*) FILTER(WHERE u.id IS NULL)
+ FROM stream_chatters c LEFT JOIN twitch_users u ON u.id=c.user_id WHERE c.stream_id=$1`, streamID, startedAt.Add(-newWithin), endedAt).Scan(&a.Total, &a.Resolved, &a.New, &a.Unavailable, &a.Pending)
+	if err != nil || a.Total > 0 {
 		return
 	}
-	// Chatter rows of older streams are pruned after summarizing.
-	err = s.Pool.QueryRow(ctx, `
-		SELECT total, new_accounts, missing FROM stream_chatter_summary WHERE stream_id = $1`,
-		streamID).Scan(&total, &newAccounts, &missing)
+	err = s.reader().QueryRow(ctx, `SELECT total,coalesce(resolved,0),new_accounts,missing,coverage_known,coalesce(pending,0) FROM stream_chatter_summary WHERE stream_id=$1`, streamID).Scan(&a.Total, &a.Resolved, &a.New, &a.Unavailable, &a.CoverageKnown, &a.Pending)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = nil
 	}
+
 	return
 }
 
 type PeerStat struct {
-	Language      string
-	GameID        string // category with the most viewer minutes
-	GameName      string
-	MedianViewers float64
-	ChattersPerK  float64
+	StreamID, ChannelID int64
+	StartedAt, EndedAt  time.Time
+	Language            string
+	GameID              string // category with the most viewer minutes
+	GameName            string
+	MedianViewers       float64
+	ChattersPerK        float64
 }
 
 // ChatPeerStats returns per-stream median viewers and median chatters per
 // 1000 viewers over the recent window, for the engagement baseline.
-func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat, error) {
-	rows, err := s.Pool.Query(ctx, `
-		WITH per AS (
-			SELECT coalesce(s.language, '') AS lang,
-			       coalesce(mode() WITHIN GROUP (ORDER BY v.game_id), '') AS game_id,
-			       percentile_cont(0.5) WITHIN GROUP (ORDER BY v.viewers) AS viewers,
-			       percentile_cont(0.5) WITHIN GROUP (ORDER BY c.unique_chatters::float8 * 1000 / v.viewers) AS per_k
-			FROM viewer_samples v
-			JOIN chat_minutes c ON c.channel_id = v.channel_id AND c.ts = v.ts
-			JOIN streams s ON s.id = v.stream_id
-			WHERE v.ts > $1 AND v.viewers >= 100
-			GROUP BY v.stream_id, s.language
-			HAVING count(*) >= 30
-		)
-		SELECT per.lang, per.game_id, coalesce(g.game_name, ''), per.viewers, per.per_k
-		FROM per LEFT JOIN LATERAL (
-			SELECT game_name FROM streams
-			WHERE game_id = per.game_id AND game_name IS NOT NULL
-			ORDER BY last_seen_at DESC LIMIT 1) g ON true`, since)
+func (s *Store) ChatPeerStats(ctx context.Context, since, before time.Time, exclude int64) ([]PeerStat, error) {
+	rows, err := s.reader().Query(ctx, `
+ SELECT DISTINCT ON(s.channel_id) s.id,s.channel_id,s.started_at,s.last_seen_at,
+ p.language,p.game_id,p.game_name,p.median_viewers,p.chatters_per_k
+ FROM stream_peer_metrics p JOIN streams s ON s.id=p.stream_id
+ WHERE p.metric_version=1 AND s.channel_id<>$3 AND s.ended_at>$1 AND s.ended_at<$2
+ AND p.source_last_seen=s.last_seen_at
+ ORDER BY s.channel_id,s.last_seen_at DESC,s.id DESC`, since, before, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +236,7 @@ func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat,
 	var out []PeerStat
 	for rows.Next() {
 		var p PeerStat
-		if err := rows.Scan(&p.Language, &p.GameID, &p.GameName, &p.MedianViewers, &p.ChattersPerK); err != nil {
+		if err := rows.Scan(&p.StreamID, &p.ChannelID, &p.StartedAt, &p.EndedAt, &p.Language, &p.GameID, &p.GameName, &p.MedianViewers, &p.ChattersPerK); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -224,19 +245,29 @@ func (s *Store) ChatPeerStats(ctx context.Context, since time.Time) ([]PeerStat,
 }
 
 type Score struct {
-	StreamID   int64
-	ChannelID  int64
-	LastSeenAt time.Time // the stream's last_seen_at when it was loaded
-	Version    int
-	Minutes    int
-	Quotient   float64
-	Confidence float64
-	Final      bool
-	Components any
+	StreamID       int64
+	ChannelID      int64
+	LastSeenAt     time.Time // the stream's last_seen_at when it was loaded
+	Version        int
+	Minutes        int
+	Quotient       float64
+	Confidence     float64
+	Final          bool
+	Components     any
+	Evidence       any
+	SnapshotInput  any
+	SnapshotOutput any
+	ObservedAt     time.Time
+	Peer           *PeerStat
+	Behavior       map[string]float64
 }
 
 func (s *Store) SaveScore(ctx context.Context, sc Score) error {
 	comp, err := json.Marshal(sc.Components)
+	if err != nil {
+		return err
+	}
+	evidence, err := json.Marshal(sc.Evidence)
 	if err != nil {
 		return err
 	}
@@ -245,6 +276,49 @@ func (s *Store) SaveScore(ctx context.Context, sc Score) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if sc.Behavior != nil {
+		raw, err := json.Marshal(sc.Behavior)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO stream_behavior_metrics(stream_id,source_last_seen,metrics) VALUES($1,$2,$3) ON CONFLICT(stream_id) DO UPDATE SET source_last_seen=$2,metrics=$3`, sc.StreamID, sc.LastSeenAt, raw); err != nil {
+			return err
+		}
+	}
+	if sc.Peer != nil {
+		p := sc.Peer
+		if _, err := tx.Exec(ctx, `INSERT INTO stream_peer_metrics(stream_id,metric_version,source_last_seen,language,game_id,game_name,median_viewers,chatters_per_k)
+ VALUES($1,1,$2,$3,$4,$5,$6,$7) ON CONFLICT(stream_id) DO UPDATE SET metric_version=1,source_last_seen=$2,language=$3,game_id=$4,game_name=$5,median_viewers=$6,chatters_per_k=$7`, sc.StreamID, sc.LastSeenAt, p.Language, p.GameID, p.GameName, p.MedianViewers, p.ChattersPerK); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `DELETE FROM stream_peer_metrics WHERE stream_id=$1`, sc.StreamID); err != nil {
+			return err
+		}
+	}
+	if sc.SnapshotInput != nil {
+		input, err := json.Marshal(sc.SnapshotInput)
+		if err != nil {
+			return err
+		}
+		output, err := json.Marshal(sc.SnapshotOutput)
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO score_snapshots (stream_id,observed_at,version,input,output) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, sc.StreamID, sc.ObservedAt, sc.Version, input, output)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			var same bool
+			if err := tx.QueryRow(ctx, `SELECT input=$4::jsonb AND output=$5::jsonb FROM score_snapshots WHERE stream_id=$1 AND observed_at=$2 AND version=$3`, sc.StreamID, sc.ObservedAt, sc.Version, input, output).Scan(&same); err != nil {
+				return err
+			}
+			if !same {
+				return fmt.Errorf("snapshot identity collision with different evidence")
+			}
+		}
+	}
 	if sc.Final {
 		// The stream may have reopened (or received new samples) since it was
 		// loaded; then this score is only provisional.
@@ -256,11 +330,11 @@ func (s *Store) SaveScore(ctx context.Context, sc Score) error {
 		sc.Final = tag.RowsAffected() == 1
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO stream_scores (stream_id, channel_id, scored_at, version, minutes, quotient, confidence, components, final)
-		VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8)
+		INSERT INTO stream_scores (stream_id, channel_id, scored_at, version, minutes, quotient, confidence, components, final,evidence)
+		VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8,$9)
 		ON CONFLICT (stream_id) DO UPDATE SET scored_at = now(), version = $3, minutes = $4, quotient = $5,
-			confidence = $6, components = $7, final = $8`,
-		sc.StreamID, sc.ChannelID, sc.Version, sc.Minutes, sc.Quotient, sc.Confidence, comp, sc.Final); err != nil {
+			confidence = $6, components = $7, final = $8,evidence=$9`,
+		sc.StreamID, sc.ChannelID, sc.Version, sc.Minutes, sc.Quotient, sc.Confidence, comp, sc.Final, evidence); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -317,7 +391,7 @@ type Onset struct {
 }
 
 // ReplaceOnsets stores a stream's spike onsets, replacing earlier ones.
-func (s *Store) ReplaceOnsets(ctx context.Context, streamID, channelID int64, onsets []Onset) error {
+func (s *Store) ReplaceOnsets(ctx context.Context, streamID, channelID int64, onsets []Onset, version int) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -333,9 +407,9 @@ func (s *Store) ReplaceOnsets(ctx context.Context, streamID, channelID int64, on
 			ts[i], rel[i] = o.TS, float32(o.Rel)
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO spike_onsets (stream_id, channel_id, ts, rel)
-			SELECT $1, $2, ts, rel FROM unnest($3::timestamptz[], $4::real[]) AS u(ts, rel)
-			ON CONFLICT DO NOTHING`, streamID, channelID, ts, rel); err != nil {
+			INSERT INTO spike_onsets (stream_id, channel_id, ts, rel,version)
+			SELECT $1, $2, ts, rel,$5 FROM unnest($3::timestamptz[], $4::real[]) AS u(ts, rel)
+			ON CONFLICT DO NOTHING`, streamID, channelID, ts, rel, version); err != nil {
 			return err
 		}
 	}
@@ -351,8 +425,8 @@ type PartnerOnsets struct {
 
 // PartnerOnsets returns, for every other channel live during [from, to], its
 // spike onsets in that window and how many minutes its streams overlapped.
-func (s *Store) PartnerOnsets(ctx context.Context, channelID int64, from, to time.Time) ([]PartnerOnsets, error) {
-	rows, err := s.Pool.Query(ctx, `
+func (s *Store) PartnerOnsets(ctx context.Context, channelID int64, from, to time.Time, version int) ([]PartnerOnsets, error) {
+	rows, err := s.reader().Query(ctx, `
 		WITH overlap AS (
 			SELECT s.channel_id,
 			       sum(extract(epoch FROM LEAST(s.last_seen_at, $3) - GREATEST(s.first_seen_at, $2)) / 60)::int AS minutes
@@ -362,9 +436,9 @@ func (s *Store) PartnerOnsets(ctx context.Context, channelID int64, from, to tim
 		)
 		SELECT o.channel_id, c.login, o.minutes,
 		       coalesce((SELECT array_agg(so.ts ORDER BY so.ts) FROM spike_onsets so
-		                 WHERE so.channel_id = o.channel_id AND so.ts BETWEEN $2 AND $3), '{}')
+		                 WHERE so.channel_id = o.channel_id AND so.version=$4 AND so.ts BETWEEN $2 AND $3), '{}')
 		FROM overlap o JOIN channels c ON c.id = o.channel_id
-		WHERE o.minutes > 0`, channelID, from, to)
+		WHERE o.minutes > 0`, channelID, from, to, version)
 	if err != nil {
 		return nil, err
 	}
@@ -378,4 +452,15 @@ func (s *Store) PartnerOnsets(ctx context.Context, channelID int64, from, to tim
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) StreamRef(ctx context.Context, id int64) (StreamRef, error) {
+	rs, err := s.streamRefs(ctx, `SELECT id,channel_id,coalesce(language,''),started_at,first_seen_at,last_seen_at,ended_at IS NOT NULL FROM streams WHERE id=$1`, id)
+	if err != nil {
+		return StreamRef{}, err
+	}
+	if len(rs) != 1 {
+		return StreamRef{}, pgx.ErrNoRows
+	}
+	return rs[0], nil
 }

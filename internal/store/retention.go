@@ -16,9 +16,9 @@ func (s *Store) PruneChatters(ctx context.Context, cutoff time.Time, newWithin t
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `
 		WITH due AS (
-			SELECT s.id, s.started_at FROM streams s
+			SELECT s.id, s.started_at,s.last_seen_at FROM streams s
 			JOIN stream_scores sc ON sc.stream_id = s.id AND sc.final
-			WHERE s.ended_at < $1
+			WHERE s.ended_at < $1 AND s.scored_at IS NOT NULL
 			  AND NOT EXISTS (SELECT 1 FROM stream_chatter_summary x WHERE x.stream_id = s.id)
 			ORDER BY s.ended_at
 			LIMIT $3
@@ -28,13 +28,13 @@ func (s *Store) PruneChatters(ctx context.Context, cutoff time.Time, newWithin t
 			WHERE u.created_at IS NOT NULL
 			GROUP BY 1, 2
 		)
-		INSERT INTO stream_chatter_summary (stream_id, total, new_accounts, missing, created_months, summarized_at)
+		INSERT INTO stream_chatter_summary (stream_id, total, new_accounts, missing, created_months, summarized_at,resolved,coverage_known,pending)
 		SELECT d.id,
-		       count(u.id),
-		       count(*) FILTER (WHERE u.created_at > d.started_at - $2::interval),
+		       count(c.user_id),
+		       count(*) FILTER (WHERE c.utility_messages<c.messages AND u.created_at > d.started_at - $2::interval AND u.created_at<=d.last_seen_at),
 		       count(*) FILTER (WHERE u.missing),
 		       coalesce((SELECT jsonb_object_agg(m.m, m.n) FROM months m WHERE m.id = d.id), '{}'),
-		       now()
+		       now(),count(*) FILTER(WHERE u.created_at IS NOT NULL),true,count(c.user_id) FILTER(WHERE u.id IS NULL)
 		FROM due d
 		LEFT JOIN stream_chatters c ON c.stream_id = d.id
 		LEFT JOIN twitch_users u ON u.id = c.user_id

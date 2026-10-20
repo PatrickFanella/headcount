@@ -1,6 +1,9 @@
 package chat
 
 import (
+	"git.subcult.tv/subculture-collective/headcount/internal/live"
+	twitch "github.com/gempir/go-twitch-irc/v4"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -36,5 +39,22 @@ func TestReceivingNeedsTrafficAllMinute(t *testing.T) {
 	cn.connectedAt.Store(minute.Add(10 * time.Second).UnixNano())
 	if cn.receiving(minute, now) {
 		t.Error("connection opened mid-minute counted as receiving")
+	}
+}
+
+func TestDuplicateAndDelayedMessagesDoNotInflateActivity(t *testing.T) {
+	c := New(live.New(), nil, nil, slog.Default())
+	now := time.Now().Truncate(time.Minute).Add(20 * time.Second)
+	m := twitch.PrivateMessage{ID: "id", RoomID: "1", User: twitch.User{ID: "2"}, Message: "hello", Time: now}
+	c.onMessage(m, now)
+	c.onMessage(m, now.Add(time.Second))
+	if a := c.aggs[1]; a.messages != 1 || a.duplicates != 1 {
+		t.Fatalf("duplicate counted: %+v", a)
+	}
+	m.ID = "late"
+	m.Time = now.Add(-2 * time.Minute)
+	c.onMessage(m, now)
+	if a := c.aggs[1]; a.messages != 1 || a.delayed != 1 {
+		t.Fatalf("late message counted as current: %+v", a)
 	}
 }

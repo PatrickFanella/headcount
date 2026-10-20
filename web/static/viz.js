@@ -170,7 +170,7 @@ export function renderEngagementMap(container, data, lang, cat = '') {
       ${tipRow('transparent', 'Chatters per 1k viewers', dec(p.chatters_per_k))}
       ${p.expected_per_k != null ? tipRow('transparent', 'Expected per 1k (scorer)', dec(p.expected_per_k)) : ''}
       ${p.z != null ? tipRow('transparent', 'Distance from expected', `${dec(p.z)} SD`) : ''}
-      ${tipRow('transparent', `Quotient${p.final ? '' : ' (provisional)'}`, `${q(p.quotient)} · ${pct(p.confidence)} conf.`)}
+      ${tipRow('transparent', `Quotient${p.final ? '' : ' (provisional)'}`, `${q(p.quotient)} · ${pct(p.confidence)} coverage`)}
       <div class="muted small">${esc(p.language || 'unknown language')} · click to open</div>`);
   });
   hit.addEventListener('pointerleave', () => {
@@ -211,8 +211,8 @@ function detectPeriod(acf, maxLag) {
 
 export function renderPeriodicity(container, prep, comp) {
   container.innerHTML = '';
-  if (!prep || prep.rel.length < 90 || prep.coverage < 0.7) {
-    container.innerHTML = '<p class="muted">Needs at least 90 minutes of viewer data with few gaps; this stream has too little to test for a repeating pattern.</p>';
+  if (!prep || prep.rel.length < 90 || prep.coverage < 1) {
+    container.innerHTML = '<p class="muted">Needs at least 90 minutes of viewer data without gaps for this display; this stream has too little to test for a repeating pattern.</p>';
     return;
   }
   const rel = prep.rel;
@@ -361,8 +361,7 @@ export function renderPeriodicity(container, prep, comp) {
       : `Detected period: <b>${period} minutes</b>${r}${strength != null ? ` (component strength ${pct(strength)})` : ''}.`;
   container.insertAdjacentHTML('beforeend', `<p class="caption">${summary} A tall highlighted column well above the grey noise band means the
     viewer count rises and falls on a fixed schedule; in the stacked view, cycles that trace the same sawtooth show that rhythm directly.
-    A rotating view-bot can produce this, but so can scheduled ads, timers or polls, so it is a signal, not proof. Repeated Helix values are
-    treated as missing and interpolated, as the scorer does.</p>`);
+    A rotating view-bot can produce this, but so can scheduled ads, timers or polls, so it is a signal, not proof. Repeated observations are retained; changes are not moved earlier by interpolation. Known context may exclude evidence from the stored score.</p>`);
 }
 
 // ---------- spike synchrony raster ----------
@@ -451,10 +450,10 @@ export function renderAccountAges(container, data, withSummary = true) {
     container.innerHTML = '<p class="muted">No chatter list is stored for this stream (chat was not collected, or the list has been pruned for an old stream).</p>';
     return;
   }
-  const notLooked = data.chatters - data.known;
+  const notLooked = data.pending ?? (data.known == null ? null : Math.max(0, data.chatters - data.known - (data.missing || 0)));
   const dated = data.months.reduce((a, b) => a + b[1], 0);
   if (withSummary) container.insertAdjacentHTML('beforeend', `<p class="stats-line"><b class="num">${n(data.chatters)}</b> chatters ·
-    <b class="num">${n(dated)}</b> with a known creation date · <b class="num">${n(data.missing)}</b> suspended or deleted
+    <b class="num">${n(dated)}</b> with a known creation date · <b class="num">${n(data.missing)}</b> unavailable at last lookup (reason unknown)
     ${notLooked ? `· <b class="num">${n(notLooked)}</b> not looked up yet` : ''}</p>`);
   if (!dated) {
     container.insertAdjacentHTML('beforeend', '<p class="muted">No creation dates looked up yet.</p>');
@@ -500,9 +499,7 @@ export function renderAccountAges(container, data, withSummary = true) {
     tick: (it) => (it.date.getUTCMonth() === 0 && it.date.getUTCFullYear() % yearStep === 0 ? String(it.date.getUTCFullYear()) : null),
     tip: (it) => it.date.toLocaleDateString([], { month: 'long', year: 'numeric', timeZone: 'UTC' }),
   });
-  container.insertAdjacentHTML('beforeend', `<p class="caption">Organic chat has accounts of all ages, thinning towards the present. A sharp spike of
-    accounts created in the same few weeks, especially just before the stream, is what a batch of freshly made bot accounts looks like.
-    It is a signal, not proof: giveaways, a viral moment or a new audience can also bring many new accounts.</p>`);
+  container.insertAdjacentHTML('beforeend', `<p class="caption">Account creation cohorts can reflect automation, promotions or a new community arriving together. Older accounts can also be automated or change ownership. These charts describe message authors, not individual video viewers; account age alone cannot identify bots.</p>`);
 }
 
 function columnChart(container, o) {
@@ -571,7 +568,7 @@ export function renderChannelHistory(container, streams) {
   container.appendChild(wrap);
   const width = widthOf(wrap);
   const rows = [
-    { key: 'quotient', label: 'Quotient', note: 'faded bars had low confidence', h: 110, max: 100, cls: 'col q-col', fmt: q },
+    { key: 'quotient', label: 'Quotient', note: 'faded bars had low coverage', h: 110, max: 100, cls: 'col q-col', fmt: q },
     { key: 'avg_viewers', label: 'Average viewers', h: 90, cls: 'col', fmt: compact },
     { key: 'follows_gained', label: 'Follows gained during the stream', h: 90, cls: 'col follows', fmt: compact },
   ];
@@ -630,7 +627,7 @@ export function renderChannelHistory(container, streams) {
       'aria-label': `Stream ${dateTime(s.started_at)}: quotient ${q(s.quotient)}, average viewers ${n(s.avg_viewers)}, follows gained ${n(s.follows_gained)}` }, svg);
     const perK = s.follows_gained != null && s.avg_viewers ? (s.follows_gained / s.avg_viewers) * 1000 : null;
     const html = `<div class="t">${dateTime(s.started_at)}${s.game_name ? ` · ${esc(s.game_name)}` : ''}</div>
-      ${tipRow('var(--meter-fill)', 'Quotient', s.quotient != null ? `${q(s.quotient)} · ${pct(s.confidence)} conf.` : 'not scored')}
+      ${tipRow('var(--meter-fill)', 'Quotient', s.quotient != null ? `${q(s.quotient)} · ${pct(s.confidence)} coverage` : 'not scored')}
       ${tipRow('var(--series-1)', 'Average viewers', n(s.avg_viewers))}
       ${tipRow('var(--series-3)', 'Follows gained', n(s.follows_gained))}
       ${perK != null ? tipRow('transparent', 'Follows per 1k viewers', dec(perK)) : ''}`;

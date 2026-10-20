@@ -142,7 +142,7 @@ func TestCombine(t *testing.T) {
 		"periodic_spikes": {Available: true, Strength: 1},
 		"spike_chat_lift": {Available: true, Strength: 1},
 	}, 300)
-	if q < 79 || q > 81 { // 1 - (0.4 * 0.5)
+	if math.Abs(q-30) > 1e-9 { // both detectors share the audience cause
 		t.Errorf("quotient %.1f", q)
 	}
 	if c <= 0 || c >= 1 {
@@ -218,8 +218,8 @@ func TestCombineNeedsCorroboration(t *testing.T) {
 		t.Errorf("single detector quotient %.1f, want %.0f", alone, 100*SingleCap)
 	}
 	weak, _ := Combine(map[string]Component{
-		"spike_chat_lift": {Available: true, Strength: 1},
-		"periodic_spikes": {Available: true, Strength: 0.1},
+		"spike_chat_lift":  {Available: true, Strength: 1},
+		"chatter_accounts": {Available: true, Strength: 0.1},
 	}, 300)
 	if weak <= alone || weak > 45 {
 		t.Errorf("weakly supported quotient %.1f", weak)

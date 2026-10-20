@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"time"
 )
 
 //go:embed migrations/*.sql
@@ -17,6 +19,7 @@ var migrations embed.FS
 
 type Store struct {
 	Pool *pgxpool.Pool
+	read pgx.Tx
 }
 
 func Open(ctx context.Context, url string) (*Store, error) {
@@ -91,4 +94,33 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// reader routes a scoring snapshot's reads through one repeatable-read view.
+// Writes always use the pool and are performed after that read transaction ends.
+type readDB interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func (s *Store) reader() readDB {
+	if s.read != nil {
+		return s.read
+	}
+	return s.Pool
+}
+func (s *Store) ReadSnapshot(ctx context.Context, fn func(*Store, time.Time) error) error {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var at time.Time
+	if err := tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&at); err != nil {
+		return err
+	}
+	if err := fn(&Store{Pool: s.Pool, read: tx}, at); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
