@@ -6,7 +6,7 @@
   "candidates": [
     {"login": "hasanabi", "channel_id": 207813352, "status": "nominated"},
     {"login": "mapletakes", "channel_id": 839473171, "status": "nominated"},
-    {"login": "central_commmittee", "status": "unresolved", "suggested_login": "central_committee"},
+    {"login": "central_committee", "requested_login": "central_commmittee", "channel_id": 109118789, "status": "nominated"},
     {"login": "willneff", "channel_id": 122888997, "status": "nominated"},
     {"login": "carolinekwan", "channel_id": 471218475, "status": "nominated"}
   ]

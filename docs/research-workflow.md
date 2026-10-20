@@ -42,7 +42,7 @@ Use the blinded packet for reviewers. It excludes the original quotient, detecto
 
 ## Owner-nominated reference channels
 
-The [control roster](research-controls.json) records HasanAbi, MapleTakes, willneff and carolinekwan as owner-nominated reference creators, with identities checked through Twitch's user endpoint. The supplied `central_commmittee` handle did not resolve; `central_committee` is recorded as a possible correction pending owner confirmation. Identity lookup confirms an account exists, not that its traffic is authentic.
+The [control roster](research-controls.json) records HasanAbi, MapleTakes, Central_Committee, willneff and carolinekwan as owner-nominated reference creators, with identities checked through Twitch's user endpoint. The owner confirmed `central_committee` as the intended account for the supplied `central_commmittee` handle. Identity lookup confirms an account exists, not that its traffic is authentic.
 
 A trusted creator is a useful starting point for finding ordinary episodes. Third parties can direct bots at an unwilling creator, as [Twitch describes](https://blog.twitch.tv/en/2016/06/17/on-artificial-viewers-followers-and-chat-activity-317906f1c7ea/). The roster supplies no automatic negative label, score exemption or special weight. Review normal broadcasts and annotated raids, collaborations, restricted-chat periods and promotions independently of the quotient. Leave unexplained traffic indeterminate. Similar audiences and joint events can produce legitimate overlap.
 
