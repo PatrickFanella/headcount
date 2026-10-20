@@ -2,7 +2,7 @@
 // spike synchrony, chatter account ages, channel history and sparklines.
 import {
   el, n, q, pct, dec, esc, time, dateTime, compact, niceTicks, rangeTicks, tipRow, showTooltip, showTooltipAt,
-  hideTooltip, svgX, svgY, reducedMotion, autocorrelation, median,
+  hideTooltip, svgX, svgY, reducedMotion, autocorrelation, median, navigate,
 } from './kit.js';
 
 const BANDS = [
@@ -180,7 +180,7 @@ export function renderEngagementMap(container, data, lang, cat = '') {
   });
   hit.addEventListener('click', (ev) => {
     const i = find(ev);
-    if (i >= 0) location.hash = `#/s/${pts[i].stream_id}`;
+    if (i >= 0) navigate(`/stream/${pts[i].stream_id}`);
   });
 
   // Table view: the streams furthest below expected.
@@ -190,11 +190,11 @@ export function renderEngagementMap(container, data, lang, cat = '') {
   det.innerHTML = `<summary>Table: the ${low.length} streams furthest below expected</summary>
     <table><thead><tr><th>Channel</th><th>Language</th><th class="r">Median viewers</th><th class="r">Chatters / 1k</th>
       <th class="r">Expected / 1k</th><th class="r">SD from expected</th><th class="r">Quotient</th></tr></thead>
-    <tbody>${low.map((p) => `<tr data-href="#/s/${p.stream_id}"><td><a href="#/s/${p.stream_id}">${esc(p.display_name)}</a></td>
+    <tbody>${low.map((p) => `<tr data-href="/stream/${p.stream_id}"><td><a href="/stream/${p.stream_id}">${esc(p.display_name)}</a></td>
       <td>${esc(p.language)}</td><td class="r num">${n(p.median_viewers)}</td><td class="r num">${dec(p.chatters_per_k)}</td>
       <td class="r num">${dec(p.expected_per_k)}</td><td class="r num">${dec(p.z)}</td><td class="r num">${q(p.quotient)}</td></tr>`).join('')}</tbody></table>`;
   container.appendChild(det);
-  det.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', () => { location.hash = tr.dataset.href; }));
+  det.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', () => { navigate(tr.dataset.href); }));
 }
 
 // ---------- periodicity ----------
@@ -413,7 +413,7 @@ export function renderSynchrony(container, data, ownLabel, scored = true) {
     const label = el('text', { x: m.l - 8, y: cy + 4, 'text-anchor': 'end', class: `lane-label${r.own ? ' strong' : ''}` }, svg);
     label.textContent = clip(r.label, narrow ? 12 : 20);
     if (r.login) {
-      const a = el('a', { href: `#/c/${encodeURIComponent(r.login)}` }, svg);
+      const a = el('a', { href: `/channel/${encodeURIComponent(r.login)}` }, svg);
       a.appendChild(label);
     }
     const right = el('text', { x: width - m.r + 8, y: cy + 4, class: 'lane-note' }, svg);
@@ -640,8 +640,8 @@ export function renderChannelHistory(container, streams) {
     h.addEventListener('pointerleave', off);
     h.addEventListener('focus', () => on());
     h.addEventListener('blur', off);
-    h.addEventListener('click', () => { location.hash = `#/s/${s.id}`; });
-    h.addEventListener('keydown', (e) => { if (e.key === 'Enter') location.hash = `#/s/${s.id}`; });
+    h.addEventListener('click', () => { navigate(`/stream/${s.id}`); });
+    h.addEventListener('keydown', (e) => { if (e.key === 'Enter') navigate(`/stream/${s.id}`); });
     h.style.cursor = 'pointer';
   });
   container.insertAdjacentHTML('beforeend', `<p class="caption">Each column is one stream, oldest on the left; hover for values, click to open.

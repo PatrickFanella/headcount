@@ -18,9 +18,15 @@ export const dec =(v, d = 1) => (v == null || Number.isNaN(v) ? '–' : v.toFixe
 
 export const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// Moves to one of the app's own pages without a reload.
+export function navigate(path, { replace = false } = {}) {
+  if (path !== location.pathname + location.search) history[replace ? 'replaceState' : 'pushState'](null, '', path);
+  dispatchEvent(new Event('navigate'));
+}
+
 export async function api(path) {
   const r = await fetch(`/api${path}`);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  if (!r.ok) throw Object.assign(new Error(`${r.status} ${await r.text()}`), { status: r.status });
   return r.json();
 }
 

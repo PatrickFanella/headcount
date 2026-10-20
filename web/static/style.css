@@ -150,6 +150,7 @@ td.title { max-width: 220px; overflow: hidden; text-overflow: ellipsis; color: v
 /* ---------- added charts ---------- */
 .small { font-size: 12px; }
 .caption { color: var(--text-secondary); font-size: 13px; max-width: 860px; margin: 10px 0 0; }
+.basis { color: var(--text-secondary); max-width: 860px; margin: 0 0 20px; }
 .stats-line { margin: 0 0 12px; color: var(--text-secondary); }
 .stats-line b { color: var(--text-primary); }
 .table-note { margin: 0 0 8px; }
@@ -305,3 +306,5 @@ th a.sort.active .arrow { opacity: 1; color: var(--hc-accent-ink); }
   .search { margin-left: 0; width: 100%; }
   .search input, .suggest { width: 100%; }
 }
+.plain-links { padding-left: 18px; }
+.plain-links li { margin: 4px 0; }

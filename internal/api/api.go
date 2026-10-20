@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,11 @@ type Server struct {
 	web fs.FS
 	lim *limiter
 
+	base    string // public origin, for canonical links and the sitemap
+	assets  map[string]asset
+	version string
+	index   *template.Template
+
 	overviewMu  sync.Mutex
 	overviewAt  time.Time
 	overviewRaw json.RawMessage
@@ -33,7 +39,11 @@ type Server struct {
 }
 
 func New(db *pgxpool.Pool, web fs.FS, log *slog.Logger) *Server {
-	return &Server{db: db, web: web, log: log}
+	s := &Server{db: db, web: web, log: log, base: "https://headcount.subcult.tv"}
+	if err := s.loadAssets(); err != nil {
+		panic(fmt.Sprintf("load web files: %v", err))
+	}
+	return s
 }
 
 // Limit enables per-client rate limiting of /api/ requests. trusted lists the
@@ -61,17 +71,22 @@ func (s *Server) Handler() http.Handler {
 		}
 		w.Write([]byte("ok"))
 	})
-	files := http.FileServerFS(s.web)
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		// The app's files are not fingerprinted and change with every deploy, so
-		// browsers and Cloudflare revalidate them. Brand assets rarely change.
-		if strings.HasPrefix(r.URL.Path, "/brand/") {
-			w.Header().Set("Cache-Control", "public, max-age=86400")
-		} else {
-			w.Header().Set("Cache-Control", "no-cache")
-		}
-		files.ServeHTTP(w, r)
+	mux.HandleFunc("GET /{$}", s.pageHandler(s.homePage))
+	mux.HandleFunc("GET /channel/{login}", s.pageHandler(s.channelPage))
+	mux.HandleFunc("GET /stream/{id}", s.pageHandler(s.streamPage))
+	mux.HandleFunc("GET /category/{id}", s.pageHandler(s.categoryPage))
+	mux.HandleFunc("GET /about", s.pageHandler(static(aboutPage)))
+	mux.HandleFunc("GET /engagement", s.pageHandler(static(engagementPage)))
+	mux.HandleFunc("GET /search", s.pageHandler(static(searchPage)))
+	mux.HandleFunc("GET /live", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/?live=1", http.StatusMovedPermanently)
 	})
+	mux.HandleFunc("GET /index.html", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /robots.txt", robots(s.base))
+	mux.HandleFunc("GET /sitemap.xml", s.sitemap)
+	mux.HandleFunc("GET /", s.serveAsset)
 	var h http.Handler = mux
 	if s.lim != nil {
 		h = s.lim.wrap(h)

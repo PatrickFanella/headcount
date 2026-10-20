@@ -1,6 +1,6 @@
 import {
   api, n, q, pct, time, dateTime, esc, dur, el, niceTicks, compact, nearest, tipRow, showTooltip, hideTooltip, svgX,
-  reducedMotion, prepareMinutes, dec,
+  reducedMotion, prepareMinutes, dec, navigate,
 } from './kit.js';
 import { renderEngagementMap, renderPeriodicity, renderSynchrony, renderAccountAges, renderChannelHistory, sparkline } from './viz.js';
 
@@ -31,6 +31,8 @@ const WEIGHTS = {
   follow_bursts: 0.3, unexplained_jumps: 0.3, spike_follow_lift: 0.25, chat_repetition: 0.15, start_ramp: 0.1,
 };
 
+const hm = (m) => `${Math.floor(m / 60)}h${String(Math.round(m % 60)).padStart(2, '0')}m`;
+
 function meter(value, confidence) {
   if (value == null) return '<span class="muted">not scored</span>';
   if (confidence != null && confidence < 0.1) return '<span class="muted">too little data</span>';
@@ -41,33 +43,68 @@ function meter(value, confidence) {
 }
 
 function setActiveNav() {
-  const h = (location.hash || '#/').split('?')[0];
-  document.querySelectorAll('.top nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === h));
+  document.querySelectorAll('.top nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === location.pathname));
+}
+
+// The server sends each page's title and description; views keep the title current as the reader moves around.
+const SITE = 'Headcount';
+function setTitle(page) {
+  document.title = page ? `${page} · ${SITE}` : `${SITE}: Twitch viewbot signals for the top 200 channels`;
+  document.querySelector('link[rel=canonical]')?.setAttribute('href', location.origin + location.pathname);
 }
 
 async function route() {
   setActiveNav();
   hideTooltip();
-  const h = location.hash.replace(/^#/, '').split('?')[0] || '/';
-  const parts = h.split('/').filter(Boolean);
+  const parts = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
   app.innerHTML = '<div class="empty">Loading…</div>';
   try {
-    if (parts[0] === 'c' && parts[1]) await channelView(decodeURIComponent(parts[1]));
-    else if (parts[0] === 's' && parts[1]) await streamView(parts[1]);
+    if (!parts.length) await leaderboardView();
+    else if (parts[0] === 'channel' && parts[1]) await channelView(parts[1]);
+    else if (parts[0] === 'stream' && parts[1]) await streamView(parts[1]);
     else if (parts[0] === 'about') aboutView();
     else if (parts[0] === 'engagement') await engagementView();
     else if (parts[0] === 'search') await searchView();
     else if (parts[0] === 'category' && parts[1]) await categoryView(parts[1]);
-    else {
-      // Live now used to be its own page; keep old links working.
-      if (parts[0] === 'live') history.replaceState(null, '', '#/?live=1');
-      await leaderboardView();
-    }
+    else if (parts[0] === 'live') { navigate('/?live=1', { replace: true }); return; }
+    else notFound();
   } catch (e) {
+    if (e.status === 404) { notFound(); return; }
+    setTitle('Error');
     app.innerHTML = `<div class="empty">Couldn’t load this page: ${esc(e.message)}</div>`;
   }
 }
-window.addEventListener('hashchange', route);
+
+function notFound() {
+  setTitle('Page not found');
+  app.innerHTML = '<h1>Page not found</h1><div class="empty">There’s nothing at this address. <a href="/">Go to the leaderboard</a>.</div>';
+}
+
+// Pages used to live after a # (#/c/name, #/s/id, #/live). Keep those links working.
+if (location.hash.startsWith('#/')) {
+  const old = location.hash.slice(1).replace(/^\/c\//, '/channel/').replace(/^\/s\//, '/stream/').replace(/^\/live\b\??/, '/?live=1&');
+  history.replaceState(null, '', old.replace(/[?&]$/, ''));
+}
+
+let lastPath = location.pathname;
+addEventListener('popstate', () => { lastPath = location.pathname; route(); });
+addEventListener('navigate', () => {
+  // A new page starts at the top; sorting, filtering and paging stay where the reader is.
+  if (location.pathname !== lastPath) scrollTo(0, 0);
+  lastPath = location.pathname;
+  route();
+});
+
+// Links to the app's own pages navigate in place.
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[href]');
+  if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  if (a.getAttribute('target') || a.hasAttribute('download')) return;
+  const url = new URL(a.getAttribute('href'), location.href);
+  if (url.origin !== location.origin || /^\/(api|brand)\//.test(url.pathname) || /\.\w+$/.test(url.pathname)) return;
+  e.preventDefault();
+  navigate(url.pathname + url.search);
+});
 
 // ---------- search ----------
 
@@ -82,12 +119,12 @@ function hideSuggest() {
 }
 
 function channelLink(c) {
-  return `<a href="#/c/${encodeURIComponent(c.login)}">${c.live ? '<span class="live-dot" title="live"></span>' : ''}${esc(c.display_name)}
+  return `<a href="/channel/${encodeURIComponent(c.login)}">${c.live ? '<span class="live-dot" title="live"></span>' : ''}${esc(c.display_name)}
     <span class="muted small">${c.quotient != null && c.quotient_confidence >= 0.1 ? q(c.quotient) : ''}</span></a>`;
 }
 
 function categoryLink(g) {
-  return `<a href="#/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}
+  return `<a href="/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}
     <span class="muted small">${n(g.streams)} streams</span></a>`;
 }
 
@@ -101,7 +138,7 @@ async function showSuggest() {
   const chans = res.channels.slice(0, 6), cats = res.categories.slice(0, 4);
   suggest.innerHTML = (chans.length ? `<div class="group">Channels</div>${chans.map(channelLink).join('')}` : '')
     + (cats.length ? `<div class="group">Categories</div>${cats.map(categoryLink).join('')}` : '')
-    + `<a class="all" href="#/search?q=${encodeURIComponent(text)}">${chans.length || cats.length ? 'All results' : 'No matches'} for “${esc(text)}”</a>`;
+    + `<a class="all" href="/search?q=${encodeURIComponent(text)}">${chans.length || cats.length ? 'All results' : 'No matches'} for “${esc(text)}”</a>`;
   suggest.hidden = false;
   searchInput.setAttribute('aria-expanded', 'true');
 }
@@ -112,7 +149,7 @@ searchForm.addEventListener('submit', (e) => {
   const text = searchInput.value.trim();
   if (!text) return;
   hideSuggest();
-  location.hash = `#/search?q=${encodeURIComponent(text)}`;
+  navigate(`/search?q=${encodeURIComponent(text)}`);
 });
 searchForm.addEventListener('keydown', (e) => {
   const links = [...suggest.querySelectorAll('a')];
@@ -128,8 +165,9 @@ document.addEventListener('keydown', (e) => {
 });
 
 async function searchView() {
-  const text = (new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '').trim();
+  const text = (new URLSearchParams(location.search).get('q') || '').trim();
   searchInput.value = text;
+  setTitle(text ? `Search: ${text}` : 'Search');
   if (!text) { app.innerHTML = '<h1>Search</h1><div class="empty">Type a channel or category name in the search box.</div>'; return; }
   const res = await api(`/search?q=${encodeURIComponent(text)}`);
   app.innerHTML = `
@@ -137,8 +175,8 @@ async function searchView() {
     <p class="sub">Tracked channels whose name contains the search, and categories tracked channels streamed in the last 90 days.</p>
     <h2>Channels</h2>
     ${res.channels.length ? `<table><thead><tr><th>Channel</th><th class="r">Best rank</th><th>Last live</th><th>Quotient</th></tr></thead><tbody>
-      ${res.channels.map((c) => `<tr data-href="#/c/${encodeURIComponent(c.login)}">
-        <td>${c.live ? '<span class="live-dot" title="live"></span>' : ''}<a href="#/c/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
+      ${res.channels.map((c) => `<tr data-href="/channel/${encodeURIComponent(c.login)}">
+        <td>${c.live ? '<span class="live-dot" title="live"></span>' : ''}<a href="/channel/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
           <span class="tier">${esc(c.tier)}</span></td>
         <td class="r num">${c.best_rank != null ? `#${c.best_rank}` : '–'}</td>
         <td>${c.live ? 'live now' : c.last_live_at ? dateTime(c.last_live_at) : '<span class="muted">never seen live</span>'}</td>
@@ -146,12 +184,12 @@ async function searchView() {
       </tr>`).join('')}</tbody></table>` : '<div class="empty">No tracked channel matches. Only channels that have reached the Twitch top 200 are tracked.</div>'}
     <h2>Categories</h2>
     ${res.categories.length ? `<table><thead><tr><th>Category</th><th class="r">Streams</th><th class="r">Channels</th></tr></thead><tbody>
-      ${res.categories.map((g) => `<tr data-href="#/category/${encodeURIComponent(g.game_id)}">
-        <td><a href="#/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}</a></td>
+      ${res.categories.map((g) => `<tr data-href="/category/${encodeURIComponent(g.game_id)}">
+        <td><a href="/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}</a></td>
         <td class="r num">${n(g.streams)}</td><td class="r num">${n(g.channels)}</td>
       </tr>`).join('')}</tbody></table>` : '<div class="empty">No category matches.</div>'}`;
   app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', (e) => {
-    if (!e.target.closest('a')) location.hash = tr.dataset.href;
+    if (!e.target.closest('a')) navigate(tr.dataset.href);
   }));
 }
 
@@ -161,6 +199,7 @@ const FAMILY_NAMES = { social: 'social', creative: 'creative', gambling: 'gambli
 
 async function categoryView(id) {
   const d = await api(`/categories/${encodeURIComponent(id)}`);
+  setTitle(`${d.game_name}: tracked Twitch channels`);
   app.innerHTML = `
     <h1>${esc(d.game_name)}</h1>
     <p class="sub">Tracked channels that streamed this category in the last ${d.days} days, ordered by their highest stream score
@@ -173,11 +212,11 @@ async function categoryView(id) {
       <div class="tile"><div class="v num">${d.median_quotient != null ? q(d.median_quotient) : '–'}</div><div class="l">median stream score</div></div>
     </div>
     ${d.related.length ? `<p class="muted">Similar categories: ${d.related.map((g) =>
-      `<a href="#/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}</a>`).join(', ')}</p>` : ''}
+      `<a href="/category/${encodeURIComponent(g.game_id)}">${esc(g.game_name)}</a>`).join(', ')}</p>` : ''}
     <div class="table-wrap"><table><thead><tr><th>Channel</th><th class="r">Streams here</th><th class="r">Peak viewers</th>
       <th>Highest stream score</th><th>Average here</th><th>Channel quotient</th></tr></thead><tbody>
-      ${d.channels.map((c) => `<tr data-href="${c.top_stream_id ? `#/s/${c.top_stream_id}` : `#/c/${encodeURIComponent(c.login)}`}">
-        <td>${c.live ? '<span class="live-dot" title="live"></span>' : ''}<a href="#/c/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
+      ${d.channels.map((c) => `<tr data-href="${c.top_stream_id ? `/stream/${c.top_stream_id}` : `/channel/${encodeURIComponent(c.login)}`}">
+        <td>${c.live ? '<span class="live-dot" title="live"></span>' : ''}<a href="/channel/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
           <span class="tier">${esc(c.tier)}</span></td>
         <td class="r num">${n(c.streams)}</td>
         <td class="r num">${n(c.peak)}</td>
@@ -187,9 +226,9 @@ async function categoryView(id) {
       </tr>`).join('')}</tbody></table></div>
     <p class="caption">Clicking a row opens that channel’s highest-scoring stream in this category. Streams with too little data
       are left out of the scores.</p>
-    <p><a href="#/engagement?days=14&cat=${encodeURIComponent(d.game_name)}">Plot this category on the engagement map</a></p>`;
+    <p><a href="/engagement?days=14&cat=${encodeURIComponent(d.game_name)}">Plot this category on the engagement map</a></p>`;
   app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', (e) => {
-    if (!e.target.closest('a')) location.hash = tr.dataset.href;
+    if (!e.target.closest('a')) navigate(tr.dataset.href);
   }));
 }
 
@@ -213,7 +252,7 @@ const SORTS = {
 };
 
 function boardParams() {
-  const p = new URLSearchParams(location.hash.split('?')[1] || '');
+  const p = new URLSearchParams(location.search);
   const sort = SORTS[p.get('sort')] ? p.get('sort') : 'quotient';
   return { live: p.get('live') === '1', sort, dir: p.get('dir') === 'asc' ? 'asc' : 'desc', page: Math.max(1, parseInt(p.get('page'), 10) || 1) };
 }
@@ -225,7 +264,7 @@ function boardHash({ live, sort, dir, page }) {
   if (dir === 'asc') p.set('dir', 'asc');
   if (page > 1) p.set('page', String(page));
   const qs = p.toString();
-  return `#/${qs ? `?${qs}` : ''}`;
+  return `/${qs ? `?${qs}` : ''}`;
 }
 
 // Sorting, filtering and paging reuse one fetch for a minute instead of refetching every channel.
@@ -250,6 +289,7 @@ function pageList(page, pages) {
 }
 
 async function leaderboardView() {
+  setTitle('');
   const params = boardParams();
   const { ov, rows: all, sparks } = await boardData();
   const sparkEnd = sparks ? sparks.now : 0, sparkStart = sparkEnd - (sparks?.window_minutes ?? 180) * 60;
@@ -309,9 +349,9 @@ async function leaderboardView() {
       </tr></thead>
       <tbody>${shown.map((c, i) => {
         const { value, conf } = boardScore(c);
-        return `<tr data-href="#/c/${encodeURIComponent(c.login)}">
+        return `<tr data-href="/channel/${encodeURIComponent(c.login)}">
           <td class="num muted">${first + i + 1}</td>
-          <td>${c.live_stream_id ? '<span class="live-dot" title="live"></span>' : ''}<a href="#/c/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
+          <td>${c.live_stream_id ? '<span class="live-dot" title="live"></span>' : ''}<a href="/channel/${encodeURIComponent(c.login)}">${esc(c.display_name)}</a>
             <span class="tier">${esc(c.tier)}</span></td>
           <td class="r num">${c.viewers != null ? n(c.viewers) : '<span class="muted">offline</span>'}</td>
           ${sparks ? `<td class="spark-cell">${sparkline(sparks.channels[c.id], sparkStart, sparkEnd)}</td>` : ''}
@@ -323,12 +363,12 @@ async function leaderboardView() {
       }).join('')}</tbody>
     </table></div>` : '<div class="empty">No channel is live right now.</div>'}
     ${pager}`;
-  document.getElementById('live-only').addEventListener('click', () => { location.hash = go({ live: !params.live, page: 1 }); });
+  document.getElementById('live-only').addEventListener('click', () => { navigate(go({ live: !params.live, page: 1 })); });
   app.querySelector('.pager')?.addEventListener('click', (e) => { if (e.target.closest('a')) scrollToBoard = true; });
   if (scrollToBoard) { scrollToBoard = false; document.getElementById('board').scrollIntoView({ block: 'start' }); }
   app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', (e) => {
     if (e.target.closest('a')) return;
-    location.hash = tr.dataset.href;
+    navigate(tr.dataset.href);
   }));
 }
 
@@ -336,6 +376,15 @@ async function leaderboardView() {
 
 async function channelView(login) {
   const { channel: c, streams } = await api(`/channels/${encodeURIComponent(login)}`);
+  setTitle(`${c.display_name}: Twitch viewers, chat and sus quotient`);
+  // The channel quotient averages its last ten scored streams, a live one included.
+  const scored = streams.filter((s) => s.quotient != null).slice(0, 10);
+  const observed = scored.reduce((a, s) => a + (s.minutes || 0), 0);
+  const live = scored.some((s) => s.final === false);
+  const basis = scored.length
+    ? `The channel quotient is based on ${scored.length === 1 ? 'one scored stream' : `its last ${scored.length} scored streams`}${live ? ', one still live,' : ''}
+      with ${hm(observed)} observed in total.${scored.length < 3 ? ' It is pulled towards zero until there are several streams, so it can still move a lot.' : ''}`
+    : 'No stream has been scored yet. Streams are scored when they end, or after an hour while live.';
   app.innerHTML = `
     <h1>${esc(c.display_name)}</h1>
     <p class="sub">Tracked since ${dateTime(c.first_seen_at)} · best rank #${c.best_rank ?? '–'} · tier ${esc(c.tier)}
@@ -345,11 +394,12 @@ async function channelView(login) {
       <div class="tile"><div class="v num">${pct(c.quotient_confidence)}</div><div class="l">confidence</div></div>
       <div class="tile"><div class="v num">${streams.length}</div><div class="l">streams recorded</div></div>
     </div>
+    <p class="basis">${basis}</p>
     ${streams.length ? '<h2>Stream history</h2><div class="card" id="history"></div>' : ''}
     <h2>Streams</h2>
     ${streams.length ? `<table><thead><tr><th>Started</th><th>Length</th><th>Category</th><th class="r">Avg viewers</th>
       <th class="r">Peak</th><th>Quotient</th></tr></thead><tbody>
-      ${streams.map((s) => `<tr data-href="#/s/${s.id}">
+      ${streams.map((s) => `<tr data-href="/stream/${s.id}">
         <td>${s.ended_at ? '' : '<span class="live-dot" title="live"></span>'}${dateTime(s.started_at)}</td>
         <td class="num">${dur(s.started_at, s.ended_at || Date.now())}</td>
         <td>${esc(s.game_name ?? '')}</td>
@@ -357,15 +407,16 @@ async function channelView(login) {
         <td class="r num">${n(s.peak_viewers)}</td>
         <td>${meter(s.quotient, s.confidence)}${s.final === false ? ' <span class="muted">provisional</span>' : ''}</td>
       </tr>`).join('')}</tbody></table>` : '<div class="empty">No streams recorded yet.</div>'}`;
-  app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', () => { location.hash = tr.dataset.href; }));
+  app.querySelectorAll('tbody tr').forEach((tr) => tr.addEventListener('click', () => { navigate(tr.dataset.href); }));
   if (streams.length) renderChannelHistory(document.getElementById('history'), streams);
 }
 
 // ---------- engagement map ----------
 
 async function engagementView() {
-  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const params = new URLSearchParams(location.search);
   const days = ['1', '7', '14'].includes(params.get('days')) ? params.get('days') : '7';
+  setTitle('Twitch chat engagement map');
   const data = await api(`/engagement?days=${days}`);
   const langs = [...new Set(data.points.map((p) => p.language).filter(Boolean))]
     .map((l) => [l, data.points.filter((p) => p.language === l).length]).sort((a, b) => b[1] - a[1]);
@@ -410,7 +461,7 @@ async function engagementView() {
   langSel.addEventListener('change', draw);
   catSel.addEventListener('change', draw);
   document.getElementById('em-days').addEventListener('change', (e) => { 
-    location.hash = `#/engagement?days=${e.target.value}${catSel.value ? `&cat=${encodeURIComponent(catSel.value)}` : ''}`;
+    navigate(`/engagement?days=${e.target.value}${catSel.value ? `&cat=${encodeURIComponent(catSel.value)}` : ''}`);
   });
 }
 
@@ -455,6 +506,7 @@ async function streamView(id) {
   ]);
   const s = d.stream;
   const score = d.score;
+  setTitle(`${s.display_name} stream, ${new Date(s.started_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`);
   const { smooth, baseline } = baselineOf(d.viewers);
   const avg = d.viewers.length ? d.viewers.reduce((a, p) => a + p[1], 0) / d.viewers.length : null;
   const follows = followDeltas(d.followers);
@@ -463,7 +515,7 @@ async function streamView(id) {
   const acc = d.accounts || {};
 
   app.innerHTML = `
-    <p class="sub" style="margin-bottom:6px"><a href="#/c/${encodeURIComponent(s.login)}">← ${esc(s.display_name)}</a></p>
+    <p class="sub" style="margin-bottom:6px"><a href="/channel/${encodeURIComponent(s.login)}">← ${esc(s.display_name)}</a></p>
     <h1>${esc(s.title || 'Untitled stream')}</h1>
     <p class="sub">${esc(s.game_name ?? '')} · ${dateTime(s.started_at)} – ${s.ended_at ? time(s.ended_at) : 'live'}
       ${s.first_seen_at && new Date(s.first_seen_at) - new Date(s.started_at) > 300000 ? `· recording began ${time(s.first_seen_at)}` : ''}</p>
@@ -731,6 +783,7 @@ function renderCharts(container, data) {
 // ---------- about ----------
 
 function aboutView() {
+  setTitle('How the sus quotient works');
   app.innerHTML = `<div class="prose">
     <h1>How scoring works</h1>
     <p class="sub">Every channel that reaches the Twitch top 200 is tracked from then on. Each minute the collector records its

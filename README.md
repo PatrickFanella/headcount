@@ -90,6 +90,23 @@ internal/store    Postgres/TimescaleDB access and migrations
 web/static        dashboard (no build step)
 ```
 
+## Pages and caching
+
+Every dashboard page has its own URL: `/`, `/channel/{login}`, `/stream/{id}`,
+`/category/{id}`, `/engagement`, `/about` and `/search`. The API renders
+`web/static/index.html` as a template for each one, filling in the title,
+description, canonical link, JSON-LD and a plain HTML summary, so crawlers and
+link previews get the page's content without running the script. Search pages
+and 404s are marked `noindex`. `/robots.txt` keeps crawlers out of `/api/`, and
+`/sitemap.xml` lists every channel, categories from the last 90 days and streams
+from the last 14 (rebuilt at most hourly). Old `#/` links are rewritten in the
+browser.
+
+Asset URLs carry `?v=` with a hash of all embedded files, and the API adds the
+same version to the imports between modules. URLs with the current version are
+cached for a year; anything else is revalidated. There's no version to bump by
+hand.
+
 ## Running
 
 Requires Docker. Create `.env` in the repository root:
