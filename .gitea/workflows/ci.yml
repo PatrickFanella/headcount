@@ -24,18 +24,24 @@ jobs:
           TS_TUNE_MEMORY: 1GB
           TS_TUNE_NUM_CPUS: "2"
         options: >-
+          --label tv.subcult.headcount.ci-run=${{ github.run_id }}-${{ github.run_attempt }}
           --health-cmd "pg_isready -U headcount_test -d headcount_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-    env:
-      HEADCOUNT_TEST_DATABASE_URL: postgres://headcount_test:headcount_test@postgres:5432/headcount_test?sslmode=disable
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: false
+      - name: Configure disposable database address
+        run: |
+          database_container=$(docker ps --filter 'label=tv.subcult.headcount.ci-run=${{ github.run_id }}-${{ github.run_attempt }}' --format '{{.ID}}')
+          [[ "$database_container" =~ ^[0-9a-f]{12,64}$ ]]
+          database_host=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$database_container")
+          [[ "$database_host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          echo "HEADCOUNT_TEST_DATABASE_URL=postgres://headcount_test:headcount_test@${database_host}:5432/headcount_test?sslmode=disable" >> "$GITHUB_ENV"
       - name: Verify modules
         run: go mod verify
       - name: Vet
