@@ -1,7 +1,7 @@
 {
   "brand": "Headcount",
   "source_repository": "subculture-collective/subcult-tv",
-  "source_revision": "aa83c8feea9cf4afb7aea38b8c77e73892e3a711",
+  "source_revision": "e34984fd7d39b1e237423d3a90e0cae48f145d4b",
   "generator": "studio/brand-tools/repository_identity.py",
   "scope": "Repository README and avatar only",
   "assets": [
@@ -20,13 +20,13 @@
     {
       "source": "brands/headcount/repository/avatar.svg",
       "destination": "assets/brand/avatar.svg",
-      "sha256": "207d8e4f0a975425e380cb22b64fd5f697f680bc317bbf318023ac0c98f6f94c",
+      "sha256": "3dd90767ec4911611ed50eca755e36acbad3d13bd9cbfe06c89a4a412900e74e",
       "transform": "unchanged copy"
     },
     {
       "source": "brands/headcount/repository/avatar.png",
       "destination": "assets/brand/avatar.png",
-      "sha256": "c5b9b50686c6ce7e371bb88c97b95d43735f1c195f3b30dc9b6777142a319303",
+      "sha256": "c02f379d45ea26f8635e49711ea47dcb99659746b89e0005793942a2c7735961",
       "transform": "unchanged copy"
     },
     {
@@ -47,5 +47,6 @@
       "sha256": "b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d",
       "transform": "unchanged copy"
     }
-  ]
+  ],
+  "avatar_variant": "Approved compact three-stroke glyph for repository listings at 32px and below"
 }
