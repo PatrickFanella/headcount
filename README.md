@@ -1,5 +1,7 @@
 # Headcount
 
+![Headcount repository banner](assets/brand/banner.png)
+
 Tracks Twitch channels that reach the global top 200 and scores each stream for
 patterns that view-bots, follow-bots and chat-bots produce. The score is the sus
 quotient. A high quotient means the data looks botted. It does not prove the
@@ -190,6 +192,10 @@ go test ./...
 - Shared accounts only sees message authors in tracked channels. Raid trains and
   friend groups also share chatters; the young-account filter reduces, but
   does not remove, that overlap.
+
+## Repository artwork
+
+[Brand assets and usage](assets/brand/README.md).
 
 ## License
 

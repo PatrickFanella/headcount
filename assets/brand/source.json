@@ -1,0 +1,51 @@
+{
+  "brand": "Headcount",
+  "source_repository": "subculture-collective/subcult-tv",
+  "source_revision": "aa83c8feea9cf4afb7aea38b8c77e73892e3a711",
+  "generator": "studio/brand-tools/repository_identity.py",
+  "scope": "Repository README and avatar only",
+  "assets": [
+    {
+      "source": "brands/headcount/repository/banner.svg",
+      "destination": "assets/brand/banner.svg",
+      "sha256": "4c54b28798faffc119bd2495e4ac35b97c5d4dc07697985e7762b5ef97bdf8ad",
+      "transform": "unchanged copy"
+    },
+    {
+      "source": "brands/headcount/repository/banner.png",
+      "destination": "assets/brand/banner.png",
+      "sha256": "cee17f8990ca230decb31dee57341fc30106e35562bbec8e711b59c0bcbe5828",
+      "transform": "unchanged copy"
+    },
+    {
+      "source": "brands/headcount/repository/avatar.svg",
+      "destination": "assets/brand/avatar.svg",
+      "sha256": "207d8e4f0a975425e380cb22b64fd5f697f680bc317bbf318023ac0c98f6f94c",
+      "transform": "unchanged copy"
+    },
+    {
+      "source": "brands/headcount/repository/avatar.png",
+      "destination": "assets/brand/avatar.png",
+      "sha256": "c5b9b50686c6ce7e371bb88c97b95d43735f1c195f3b30dc9b6777142a319303",
+      "transform": "unchanged copy"
+    },
+    {
+      "source": "brand-tools/fonts/barlowcondensed-OFL.txt",
+      "destination": "assets/brand/licenses/barlowcondensed-OFL.txt",
+      "sha256": "186d750eb496a4c17a76385f82be6aea2ac1cf2de074a811d63786cf374ea73f",
+      "transform": "unchanged copy"
+    },
+    {
+      "source": "brand-tools/fonts/publicsans-OFL.txt",
+      "destination": "assets/brand/licenses/publicsans-OFL.txt",
+      "sha256": "157a9e77f7580246e97c769490e2e977ae94399f9d30f4556015c41fe8c28bac",
+      "transform": "unchanged copy"
+    },
+    {
+      "source": "brand-tools/fonts/jetbrainsmono-OFL.txt",
+      "destination": "assets/brand/licenses/jetbrainsmono-OFL.txt",
+      "sha256": "b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d",
+      "transform": "unchanged copy"
+    }
+  ]
+}
