@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg17@sha256:b346edcdb51a1fd6020e3965e0bd1c9f3406fa6d5fbce1e28f4852587ef934e2
+        env:
+          POSTGRES_USER: headcount_test
+          POSTGRES_PASSWORD: headcount_test
+          POSTGRES_DB: headcount_test
+          TIMESCALEDB_TELEMETRY: "off"
+          TS_TUNE_MEMORY: 1GB
+          TS_TUNE_NUM_CPUS: "2"
+        options: >-
+          --health-cmd "pg_isready -U headcount_test -d headcount_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      HEADCOUNT_TEST_DATABASE_URL: postgres://headcount_test:headcount_test@postgres:5432/headcount_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Verify modules
+        run: go mod verify
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and database integration tests
+        run: go test -race -count=1 -timeout=10m ./...
+      - name: Build all commands
+        run: go build ./cmd/...
