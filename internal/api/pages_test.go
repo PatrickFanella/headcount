@@ -58,6 +58,14 @@ func TestAssetCaching(t *testing.T) {
 	}
 }
 
+func TestRootFaviconServesBrandIcon(t *testing.T) {
+	s := testServer(t)
+	w := get(t, s.Handler(), "/favicon.ico")
+	if w.Code != http.StatusOK || w.Body.String() != string(s.assets["/brand/favicon.ico"].body) {
+		t.Errorf("/favicon.ico: status %d, want the /brand/favicon.ico bytes", w.Code)
+	}
+}
+
 func TestStaticPagesRender(t *testing.T) {
 	s := testServer(t)
 	h := s.Handler()
