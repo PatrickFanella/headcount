@@ -85,6 +85,12 @@ func (s *Server) Handler() http.Handler {
 		http.Redirect(w, r, "/", http.StatusMovedPermanently)
 	})
 	mux.HandleFunc("GET /robots.txt", robots(s.base))
+	// Browsers and crawlers request /favicon.ico at the root; serve the brand copy.
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		r = r.Clone(r.Context())
+		r.URL.Path = "/brand/favicon.ico"
+		s.serveAsset(w, r)
+	})
 	mux.HandleFunc("GET /sitemap.xml", s.sitemap)
 	mux.HandleFunc("GET /", s.serveAsset)
 	var h http.Handler = mux
