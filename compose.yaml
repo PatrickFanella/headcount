@@ -63,8 +63,8 @@ services:
     restart: unless-stopped
     logging: *logging
 
-  # Nightly logical dump into ./backups, keeping 7 days. Dozor pulls a copy
-  # each night (sus-quotient-backup.timer there) for disk or host loss.
+  # Daily logical dump into ./backups, keeping the two newest. Dozor pulls a
+  # copy each night (sus-quotient-backup.timer there) and holds the history.
   backup:
     image: timescale/timescaledb:latest-pg17
     user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
@@ -72,13 +72,20 @@ services:
     command:
       - |
         while true; do
+          # A restart within a day of the last dump waits instead of dumping again.
+          last=$$(ls -1t /backups/susq-*.dump 2>/dev/null | head -1)
+          if [ -n "$$last" ] && [ -n "$$(find "$$last" -mmin -1380)" ]; then
+            sleep 3600; continue
+          fi
+          # A dump interrupted by a restart leaves its .tmp behind.
+          find /backups -name 'susq-*.dump.tmp' -delete
           f=/backups/susq-$$(date -u +%Y%m%dT%H%M%SZ).dump
           if pg_dump -Fc -f "$$f.tmp" && mv "$$f.tmp" "$$f"; then
             echo "backup written: $$f"
           else
             rm -f "$$f.tmp"; echo "backup failed" >&2
           fi
-          find /backups -name 'susq-*.dump' -mtime +7 -delete
+          ls -1t /backups/susq-*.dump | tail -n +3 | xargs -r rm -f
           sleep 86400
         done
     environment:
