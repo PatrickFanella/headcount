@@ -54,6 +54,16 @@ func (s *Server) Limit(perMinute, burst int, trusted []netip.Prefix) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /build-info.json", func(w http.ResponseWriter, r *http.Request) {
+		asset, ok := s.assets["/build-info.json"]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(asset.body)
+	})
 	mux.HandleFunc("GET /api/overview", s.overview)
 	mux.HandleFunc("GET /api/channels", s.channels)
 	mux.HandleFunc("GET /api/channels/{login}", s.channel)

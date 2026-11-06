@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -12,7 +13,7 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: timescale/timescaledb:latest-pg17@sha256:b346edcdb51a1fd6020e3965e0bd1c9f3406fa6d5fbce1e28f4852587ef934e2
@@ -29,8 +30,13 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+    env:
+      DEPLOY_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -50,3 +56,101 @@ jobs:
         run: go test -race -count=1 -timeout=10m ./...
       - name: Build all commands
         run: go build ./cmd/...
+      - name: Reuse an already accepted API artifact
+        id: artifact
+        if: github.repository == 'subculture-collective/headcount' && github.server_url == 'https://git.subcult.tv' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMELAB_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.HOMELAB_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
+          test -n "$DEPLOY_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          umask 077
+          deploy_dir=$(mktemp -d)
+          trap 'rm -rf "$deploy_dir"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$deploy_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$deploy_dir/known_hosts"
+          unset DEPLOY_KEY DEPLOY_KNOWN_HOSTS
+          ssh_args=(-F /dev/null -i "$deploy_dir/key" -o ControlPath=none -o ControlMaster=no -o BatchMode=yes -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$deploy_dir/known_hosts"
+            -o ConnectTimeout=15 onnwee@10.0.0.50)
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "artifact $DEPLOY_REVISION api" > "$deploy_dir/artifact.json"
+          python3 - "$deploy_dir/artifact.json" "$GITHUB_OUTPUT" <<'PYCODE'
+          import json, re, sys
+          from pathlib import Path
+          info = json.loads(Path(sys.argv[1]).read_text())
+          available = info.get("available") is True
+          if available:
+              assert re.fullmatch(r"sha256:[0-9a-f]{64}", info.get("image", ""))
+              assert info["revision"] == "${{ github.sha }}" and info["service"] == "api"
+          with Path(sys.argv[2]).open("a") as output:
+              output.write("available=" + str(available).lower() + "\n")
+          PYCODE
+      - name: Build and qualify the accepted API image
+        if: steps.artifact.outputs.available != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
+          image="fleet-deploy/headcount-api/api:$DEPLOY_REVISION"
+          docker build --build-arg "SOURCE_REVISION=$DEPLOY_REVISION" \
+            --label "org.opencontainers.image.revision=$DEPLOY_REVISION" \
+            --label "org.opencontainers.image.source=https://git.subcult.tv/subculture-collective/headcount" \
+            -t "$image" .
+          python3 scripts/check-ci-image.py "$image" "$DEPLOY_REVISION"
+      - name: Deploy the read-only dashboard API and verify the public build
+        if: >-
+          github.repository == 'subculture-collective/headcount' && github.server_url == 'https://git.subcult.tv' &&
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        env:
+          REUSE_ARTIFACT: ${{ steps.artifact.outputs.available }}
+          DEPLOY_KEY: ${{ secrets.HOMELAB_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.HOMELAB_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
+          test -n "$DEPLOY_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          umask 077
+          deploy_dir=$(mktemp -d)
+          trap 'rm -rf "$deploy_dir"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$deploy_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$deploy_dir/known_hosts"
+          unset DEPLOY_KEY DEPLOY_KNOWN_HOSTS
+          ssh_args=(-F /dev/null -i "$deploy_dir/key" -o ControlPath=none -o ControlMaster=no -o BatchMode=yes -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$deploy_dir/known_hosts"
+            -o ConnectTimeout=15 onnwee@10.0.0.50)
+          ssh "${ssh_args[@]}" status
+          image="fleet-deploy/headcount-api/api:$DEPLOY_REVISION"
+          # The forced receiver accepts a full hexadecimal revision; expand it here.
+          if [[ "$REUSE_ARTIFACT" != true ]]; then
+            # shellcheck disable=SC2029
+            docker save "$image" | ssh "${ssh_args[@]}" "receive $DEPLOY_REVISION api"
+          fi
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "deploy $DEPLOY_REVISION"
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --max-time 30 \
+            -D "$deploy_dir/headers" https://headcount.subcult.tv/build-info.json > "$deploy_dir/build-info.json"
+          python3 - "$deploy_dir" "$DEPLOY_REVISION" <<'PYCODE'
+          import json, sys
+          from pathlib import Path
+          directory = Path(sys.argv[1])
+          expected = (json.dumps({"schema_version": 1, "source_commit": sys.argv[2]}, separators=(",", ":")) + "\n").encode()
+          assert (directory / "build-info.json").read_bytes() == expected
+          assert "cache-control: no-store" in (directory / "headers").read_text().lower()
+          PYCODE
+          for asset in favicon.ico apple-touch-icon.png og.png; do
+            curl --fail --silent --show-error --retry 4 --retry-all-errors --max-time 30 \
+              "https://headcount.subcult.tv/brand/$asset" > "$deploy_dir/$asset"
+            cmp "web/static/brand/$asset" "$deploy_dir/$asset"
+          done
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --max-time 30 \
+            https://headcount.subcult.tv/healthz > "$deploy_dir/health.txt"
+          test "$(cat "$deploy_dir/health.txt")" = ok
+          printf 'Live Headcount source marker, health and selected icons match %s\n' "$DEPLOY_REVISION"

@@ -172,6 +172,9 @@ The `backup` service writes a nightly `pg_dump -Fc` to `./backups`, keeping 7
 days. On the homelab deployment, Dozor pulls a copy each night and alerts if
 it is older than 36 hours.
 
+Dashboard pushes on canonical main deploy through the existing verification job.
+See [CI deployment and recovery](docs/ci-deployment.md) for the API scope and data gate.
+
 ### Tests
 
 ```sh
